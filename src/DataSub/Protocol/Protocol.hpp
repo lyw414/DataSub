@@ -1,12 +1,20 @@
 #ifndef  __LYW_CODE_PROTOCOL_H_FILE__
 #define __LYW_CODE_PROTOCOL_H_FILE__
 
-namespace LYW_CODE::DataSub
+namespace LYW_CODE
+{
+namespace DataSub
 {
     class Protocol
     {
     public:
 #pragma(1)
+    typedef struct _PublishInfo
+    {
+        int ID;
+    } PublishInfo_t;
+
+
     /**
      * @brief       发布者
      *
@@ -143,5 +151,6 @@ namespace LYW_CODE::DataSub
             return m_data;
         }
     };
+}
 }
 #endif

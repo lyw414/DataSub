@@ -1,33 +1,39 @@
 #ifndef __LYW_CODE_DATA_SUB_H_FILE__
 #define __LYW_CODE_DATA_SUB_H_FILE__
+
+#include "DataSubFunc.hpp"
+#include <string>
+
 namespace LYW_CODE
 {
     class DataSub
     {
     private:
+        key_t m_key;
+
+        std::string m_name;
+
+        pthread_mutex_t m_lock;
 
     public:
-        DataSub(const char * name);
+        DataSub();
 
-        int Create(key_t key);
-        
-        int Destroy();
+        int Init(const char * name);
 
-        int Start(int threadCount, int taskCount);
-
-        int Stop(int threadCount, int taskCount);
+        int UnInit();
 
         int Publish(int msgID, void * msg, int lenOfMsg);
 
-        int Subcribe(int msgID, HandleMsg, int mode, int timeot);
+        int Subcribe(int msgID, int HandleMsg, int mode, int timeout);
 
-        int Response(int PublishInfo, void * msg, int lenOfMsg);
+        int Response(int publishInfo, void * msg, int lenOfMsg);
 
-        int SubcribeResponse(int msgID, HandleMsg, int timeout);
+        int SubcribeResponse(int msgID, int HandleMsg, int timeout);
 
         int UnSubcribe(int msgID);
 
         int UnSubcribeResponse(int msgID);
     };
+
 }
 #endif

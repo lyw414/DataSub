@@ -541,8 +541,6 @@ namespace LYW_CODE
             //::pthread_mutex_unlock(&m_shmInfo->lock);
             UnLock();
 
-
-
             //notify
             ::pthread_cond_broadcast(&m_shmInfo->cond);
             return 0;
