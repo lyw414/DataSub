@@ -15,6 +15,11 @@ namespace LYW_CODE
 
         pthread_mutex_t m_lock;
 
+        TaskPool m_task;
+
+    private:
+
+
     public:
         DataSub();
 

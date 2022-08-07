@@ -63,11 +63,11 @@ namespace LYW_CODE
                 {
                     m_map[keyStr].count++;
                     ::pthread_mutex_unlock(&m_lock);
-                    return 0;
+                    return 1;
                 }
                 else
                 {
-                    //键值冲突
+                    //键值冲突 不做处理
                     ::pthread_mutex_unlock(&m_lock);
                     return -1;
                 }

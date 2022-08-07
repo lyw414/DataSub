@@ -12,4 +12,4 @@ INC_DIR += -I ProClientTable
 FLAGS = -lpthread
 
 all:
-		g++ -std=c++98 -o Test test.cpp ${SRC_FILE} ${INC_DIR} ${FLAGS}
+		g++ -g -std=c++98 -o Test test.cpp ${SRC_FILE} ${INC_DIR} ${FLAGS}
