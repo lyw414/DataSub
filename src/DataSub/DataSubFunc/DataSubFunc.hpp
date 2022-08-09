@@ -2,13 +2,86 @@
 #define __LYW_CODE_DATA_SUB_FUNC_HPP__
 #define SubErrorCB SubHandleCB 
 
+#define Function3 SubHandleCB 
+
 #include <stdlib.h>
 namespace LYW_CODE
 {
+
+
+    template<typename T>
+    class Function1;
+
+    template<typename RES, typename ARGS1>
+    class Function1 <RES(ARGS1)>
+    {
+    private:
+        class None {};
+        typedef RES(None::*objFunc_t)(ARGS1);
+        typedef RES(*stFunc_t)(ARGS1);
+        None * m_obj;
+        
+        union {
+            objFunc_t objFunc;
+            stFunc_t stFunc;
+        } m_func;
+
+
+    public:
+        template<typename OBJ>
+        Function1(RES(OBJ::*func)(ARGS1), OBJ * obj)
+        {
+            m_func.objFunc = (objFunc_t)(func);
+            m_obj = (None *)obj; 
+        }
+
+
+        Function1()
+        {
+            m_obj = NULL; 
+            m_func.stFunc = NULL;
+        }
+
+
+        Function1(RES(*func)(ARGS1))
+        {
+            m_obj = NULL;
+            m_func.stFunc = (stFunc_t)(func);
+        }
+
+        RES operator() (ARGS1 args1)
+        {
+            if (m_obj != NULL)
+            {
+                return (m_obj->*(m_func.objFunc))(args1);
+            }
+            else
+            {
+                return m_func.stFunc(args1);
+            }
+        }
+        
+        Function1 & operator= (void * ptr)
+        {
+            m_obj = NULL;
+            m_func.stFunc = (stFunc_t)ptr;
+            return *this;
+        }
+
+        Function1 & operator= (const Function1 & ptr)
+        {
+            m_obj = ptr.m_obj;
+            m_func = ptr.m_func;
+            return *this;
+        }
+
+    };
+
+    
+
     template<typename T>
     class SubHandleCB;
 
-    
     template<typename RES, typename ARGS1, typename ARGS2, typename ARGS3>
     class SubHandleCB <RES(ARGS1,ARGS2,ARGS3)>
     {
@@ -33,6 +106,12 @@ namespace LYW_CODE
         }
 
 
+        SubHandleCB()
+        {
+            m_obj = NULL;
+            m_func.stFunc = NULL;
+        }
+
         SubHandleCB(RES(*func)(ARGS1, ARGS2, ARGS3))
         {
             m_obj = NULL;
@@ -49,6 +128,20 @@ namespace LYW_CODE
             {
                 return m_func.stFunc(args1, args2, args3);
             }
+        }
+
+        SubHandleCB & operator= (void * ptr)
+        {
+            m_obj = NULL;
+            m_func.stFunc = (stFunc_t)ptr;
+            return *this;
+        }
+
+        SubHandleCB & operator= (const SubHandleCB & ptr)
+        {
+            m_obj = ptr.m_obj;
+            m_func = ptr.m_func;
+            return *this;
         }
     };
 

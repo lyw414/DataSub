@@ -10,8 +10,9 @@
 #include <stdlib.h>
 #include <signal.h>
 
-#include <functional>
 #include <map>
+
+#include "DataSubFunc.hpp"
 
 namespace LYW_CODE
 {
@@ -95,7 +96,7 @@ namespace LYW_CODE
 
         int m_st;
 
-        std::function <bool (void *)> m_isReadFinishFunc;
+        Function1 <bool (void *)> m_isReadFinishFunc;
 
         //std::function <bool (void *)> m_timeoutHandleFunc;
     private:
@@ -354,7 +355,7 @@ namespace LYW_CODE
          * @param[in]shmKey             共享缓存键值
          *
          */
-        int Connect(std::function <bool (void *)> isReadFinishFunc)
+        int Connect(Function1<bool (void *)> isReadFinishFunc)
         {
             int retry = 10;
             ::pthread_mutex_lock(&m_lock);
@@ -546,7 +547,7 @@ namespace LYW_CODE
             return 0;
         }
 
-        void * Read(BlockHandle_t * bBH, BlockHandle_t * rBH, std::function<bool(void *, unsigned int, void *)> isNeed, void * userParam)
+        void * Read(BlockHandle_t * bBH, BlockHandle_t * rBH, Function3<bool(void *, unsigned int, void *)> isNeed, void * userParam)
         {
             unsigned int next = 0;
 
