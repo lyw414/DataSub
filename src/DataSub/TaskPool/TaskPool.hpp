@@ -3,13 +3,24 @@
 
 #include <pthread.h>
 
-#include "TaskFunc.hpp"
+#include "DataSubFunc.hpp"
 
+#include <list>
 
 namespace LYW_CODE
 {
     class TaskPool 
     {
+
+    public:
+        typedef struct _TaskNode
+        {
+            void * param;
+            unsigned int lenOfParam;
+            Fuction2<void (void *, unsigned int)> handleFunc;
+        } TaskNode_t;
+
+
     private:
         typedef struct _Thread 
         {
@@ -18,6 +29,10 @@ namespace LYW_CODE
 
     private:
         int m_threadNum;
+
+        std::list <TaskNode_t> m_waitingTaskList;
+
+        std::list <TaskNode_t> m_doingTaskList;
 
     public:
         TaskPool(int threadNum)
@@ -36,8 +51,9 @@ namespace LYW_CODE
             return 0;
         }
 
-        int AddTask()
+        int AddTask(TaskNode_t & taskNode)
         {
+            //m_waitingTaskList.push_back(taskNode);
             return 0;
         }
 

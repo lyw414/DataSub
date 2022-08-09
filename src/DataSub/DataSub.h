@@ -4,6 +4,7 @@
 #include "DataSubFunc.hpp"
 #include "TaskPool.hpp"
 #include "RWBlockArray_IPC.hpp"
+#include "ProSubTable.hpp"
 
 #include <string>
 
@@ -14,6 +15,10 @@ namespace LYW_CODE
     private:
         typedef struct _ShareInfo {
             TaskPool * task;
+
+            ProSubTable * proSub;
+
+            RWBlockArray_IPC * ipc;
             //0 终止 1 运行 2 终止中
             int recvST;
 
@@ -32,6 +37,7 @@ namespace LYW_CODE
 
         pthread_attr_t m_attr;
 
+
     private:
 
         //IPC 接收线程
@@ -39,7 +45,9 @@ namespace LYW_CODE
 
         void RecvFromIPC ();
 
+        bool IsReadFinished(void * msg);
 
+        bool IsNeedData(void * data, unsigned int size, void * param);
 
     public:
         DataSub();
@@ -47,6 +55,7 @@ namespace LYW_CODE
         int Init(const char * name, int threadNum = 8);
 
         int UnInit();
+
 
         int Publish(int msgID, void * msg, int lenOfMsg);
 

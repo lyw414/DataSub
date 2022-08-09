@@ -8,6 +8,7 @@ INC_DIR += -I Protocol
 INC_DIR += -I Hash
 INC_DIR += -I ProClientTable
 INC_DIR += -I TaskPool 
+INC_DIR += -I ProSubTable
 
 
 FLAGS = -lpthread

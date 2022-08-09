@@ -8,6 +8,75 @@
 namespace LYW_CODE
 {
 
+    template<typename T>
+    class Function2;
+
+    template<typename RES, typename ARGS1, typename ARGS2>
+    class Function2 <RES(ARGS1)>
+    {
+    private:
+        class None {};
+        typedef RES(None::*objFunc_t)(ARGS1, ARGS2);
+        typedef RES(*stFunc_t)(ARGS1, ARGS2);
+        None * m_obj;
+        
+        union {
+            objFunc_t objFunc;
+            stFunc_t stFunc;
+        } m_func;
+
+
+    public:
+        template<typename OBJ>
+        Function2(RES(OBJ::*func)(ARGS1, ARGS2), OBJ * obj)
+        {
+            m_func.objFunc = (objFunc_t)(func);
+            m_obj = (None *)obj; 
+        }
+
+
+        Function2()
+        {
+            m_obj = NULL; 
+            m_func.stFunc = NULL;
+        }
+
+
+        Function2(RES(*func)(ARGS1, ARGS2))
+        {
+            m_obj = NULL;
+            m_func.stFunc = (stFunc_t)(func);
+        }
+
+        RES operator() (ARGS1 args1, ARGS2 args2)
+        {
+            if (m_obj != NULL)
+            {
+                return (m_obj->*(m_func.objFunc))(args1, args2);
+            }
+            else
+            {
+                return m_func.stFunc(args1);
+            }
+        }
+        
+        Function2 & operator= (void * ptr)
+        {
+            m_obj = NULL;
+            m_func.stFunc = (stFunc_t)ptr;
+            return *this;
+        }
+
+        Function2 & operator= (const Function2 & ptr)
+        {
+            m_obj = ptr.m_obj;
+            m_func = ptr.m_func;
+            return *this;
+        }
+
+    };
+
+
 
     template<typename T>
     class Function1;
