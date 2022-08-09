@@ -19,6 +19,7 @@ namespace LYW_CODE
             int count;
             char name[256];
             key_t key;
+            void * param;
         } Client_t;
         
         pthread_mutex_t m_lock;
@@ -77,6 +78,7 @@ namespace LYW_CODE
                 ::strcpy(client.name, name);
                 client.count = 1;
                 client.key = key;
+                client.param = NULL;
                 m_map[keyStr] = client;
                 ::pthread_mutex_unlock(&m_lock);
                 return 0;
@@ -84,8 +86,65 @@ namespace LYW_CODE
 
             return 0;
         }
+
+        void SetParam(const char * name, void * param)
+        {
+            char tmp[512] = { 0 };
+
+            std::string keyStr;
+
+            key_t key = Hash::APHash(name, ::strlen(name));
+            
+            ::memset(tmp, 0x00, 512);
+
+            snprintf(tmp, 512, "%d_%s", key, name);
+
+            keyStr = std::string(tmp);
+
+            ::pthread_mutex_lock(&m_lock);
+            if (m_map.find(keyStr) != m_map.end())
+            {
+                if (::strcmp(m_map[keyStr].name, name) == 0)
+                {
+                    m_map[keyStr].param = param;
+                    ::pthread_mutex_unlock(&m_lock);
+                    return;
+                }
+            }
+            ::pthread_mutex_unlock(&m_lock);
+        }
+
+        void * GetParam(const char *name)
+        {
+            void * param = NULL;
+
+            char tmp[512] = { 0 };
+
+            std::string keyStr;
+
+            key_t key = Hash::APHash(name, ::strlen(name));
+            
+            ::memset(tmp, 0x00, 512);
+
+            snprintf(tmp, 512, "%d_%s", key, name);
+
+            keyStr = std::string(tmp);
+
+            ::pthread_mutex_lock(&m_lock);
+            if (m_map.find(keyStr) != m_map.end())
+            {
+                if (::strcmp(m_map[keyStr].name, name) == 0)
+                {
+                    param = m_map[keyStr].param;
+                    ::pthread_mutex_unlock(&m_lock);
+                    return param;
+                }
+            }
+            ::pthread_mutex_unlock(&m_lock);
+            return NULL;
+        }
         
-        void UnRegister(const char * name)
+        int UnRegister(const char * name)
         {
             char tmp[512] = { 0 };
 
@@ -110,10 +169,11 @@ namespace LYW_CODE
                         m_map.erase(keyStr);
                     }
                     ::pthread_mutex_unlock(&m_lock);
-                    return;
+                    return 0;
                 }
             }
             ::pthread_mutex_unlock(&m_lock);
+            return 1;
         }
     };
 }

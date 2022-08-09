@@ -7,6 +7,7 @@ INC_DIR += -I RWBlockArray
 INC_DIR += -I Protocol
 INC_DIR += -I Hash
 INC_DIR += -I ProClientTable
+INC_DIR += -I TaskPool 
 
 
 FLAGS = -lpthread
