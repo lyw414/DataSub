@@ -12,7 +12,7 @@ namespace LYW_CODE
     class Function2;
 
     template<typename RES, typename ARGS1, typename ARGS2>
-    class Function2 <RES(ARGS1)>
+    class Function2 <RES(ARGS1,ARGS2)>
     {
     private:
         class None {};

@@ -1,61 +1,70 @@
-#ifndef __LYW_CODE_THREAD_SUB_TABLE_HPP_
-#define __LYW_CODE_THREAD_SUB_TABLE_HPP_
+#ifndef __LYW_CODE_THREAD_SUB_TABLE_HPP__
+#define __LYW_CODE_THREAD_SUB_TABLE_HPP__
 
 #include "DataSubFunc.hpp"
-#include <map>
+#include "RWLock.hpp"
+
 
 namespace LYW_CODE
 {
-    //数据结构为 (ClientSubMap_t + ClientSubInfoIndex_t)[] + MsgSubMap_t[]
     class ThreadSubTable
     {
     public:
 #pragma pack(1)
-        typedef _ClientSubInfo {
+        typedef struct _SubInfo {
             int st;
             void * userParam;
             Function3<void(void *, unsigned int, void *)> handleCB;
-            Function3<void(void *, unsigned int, void *)> ErrorCB;
-        } ClientSubInfo_t;
+            Function3<void(void *, unsigned int, void *)> errorCB;
+        } SubInfo_t;
 #pragma pack()
-
     private:
 
 #pragma pack(1)
-        typedef struct _ClientSubMap {
+        typedef struct _CliSubMap {
             int st;
-        } ClientSubMap_t;
+            //size为 MapInfo_t::msgCount
+            int subInfoIndex[0];
+        } CliSubMap_t;
 
-        typedef struct _ClientSubInfoIndex{
-            int index;
-        } ClientSubInfoIndex_t;
 
-        typedef struct _MsgSubInfo {
+        typedef struct _MsgSubMap {
+            int st;
             int msgID;
-            int st;
+            //size为 MapInfo_t::cliBitMapSize
+            unsigned char cliBitMap[0];
         } MsgSubMap_t;
 
 
         typedef struct _MapInfo {
-            int cliCount;
-            int msgCount;
-            int subMapSize;
+            //map size
             unsigned int totalSize;
+            //初始定义为 16 按 16递增
+            int cliCount;   
+            //初始定义为 32 按 32递增
+            int msgCount;
+            //为 cliCount / 8
+            int cliBitMapSize; 
+            //初始定义为 128 按 128递增
+            int subInfoSize;
+            //客户注册map开始地址
+            CliSubMap_t * cliMap;
+            //消息注册map开始地址
+            MsgSubMap_t * msgMap;
+            //订阅详情（数组）开始地址 下标为索引 在每个cli后存在一个msgMap内登记了该索引
+            SubInfo_t * subInfo;
+
         } MapInfo_t;
-
-
 #pragma pack()
     private:
-        //写阻塞锁 保证读效率
         pthread_mutex_t m_lock;
-        pthread_mutex_t m_readLock;
 
-        unsigned int m_readRecord;
-        unsigned int m_IsWrite;
+        RWDelaySafeLock m_rwLock;
 
-
-        MapInfo_t * m_map;
-
+        MapInfo_t * m_mapInfo;
+        //写发生在该map中 由Flush冲洗至m_mapInfo(仅仅交换地址即可）为了保证读的高效行 写数据生效延迟较大 通常为3s左右
+        MapInfo_t * m_waitFlushMapInfo;
+ 
     private:
         inline void SetBit(unsigned char * bitMap, int index, unsigned char setValue)
         {
@@ -76,7 +85,15 @@ namespace LYW_CODE
                 bitMap[byteIndex] |= bit;
             }
         }
-
+        
+        /**
+         * @brief               获取bitMap 索引下 bit位值 为减少检测次数 请自行保证 index 的合法性 崩溃概不负责
+         * @param[in]bitMap     bitMap 不做长度检测
+         * @param[in]index      索引
+         *
+         * @return      0       索引位为 0 
+         *              1       索引位位 1
+         */
         inline int GetBit(unsigned char * bitMap, int index)
         {
             unsigned char bit = 0x01;
@@ -94,162 +111,209 @@ namespace LYW_CODE
             }
         }
 
-        MapInfo_t * ExpandMap(const MapInfo_t & mapInfo)
+        MapInfo_t * ExpandMap(const MapInfo_t & expandMapInfo, const MapInfo_t * basicMapInfo)
         {
-            MapInfo_t * tmp = NULL;
-            int totalSize = 0;
-            unsigned int readRecord = 0;
+            unsigned int totalSize = 0;
+            int size = 0;
+            MapInfo_t * mapInfo = NULL;
 
-            ::pthread_mutex_lock(&m_lock);
+            int cliCount = expandMapInfo->cliCount;
+            int msgCount = expandMapInfo->msgCount;
+            int cliBitMapSize = cliCount / 8;
+            int subInfoSize = expandMapInfo->subInfoSize;
 
-            if (m_map == NULL || mapInfo.cliCount != m_map.cliCount || mapInfo.msgCount != m_map.msgCount) 
+            if (basicMapInfo != NULL 
+               && basicMapInfo->cliCount == cliCount 
+               && basicMapInfo->msgCount == msgCount 
+               && basicMapInfo->subInfoSize == subInfoSize 
+               )
             {
-                //创建新的map 
-                totalSize = sizeof(MapInfo_t) + mapInfo.cliCount * (sizeof(ClientSubMap_t) + sizeof(ClientSubInfoIndex_t)) + mapInfo.msgCount * (sizeof(MapInfo_t) + mapInfo.cliCount/8);
-                tmp = (MapInfo_t *)::malloc(totalSize);
-                ::memset(tmp, 0x00, totalSize);
-                tmp->cliCount = mapInfo.cliCount;
-                tmp->msgCount = mapInfo.msgCount;
-                tmp->subMapSize = tmp->cliCount / 8;
-                tmp->totalSize = totalSize;
-                //拷贝旧数据
-                if (m_map != NULL)
+                return NULL;
+            }
+
+            totalSize = sizeof(MapInfo_t) + (sizeof(CliSubMap_t) + (sizeof(int) * msgCount)) * cliCount  + (sizeof(MsgSubMap_t) + cliBitMapSize) * msgCount + sizeof(SubInfo_t) * subInfoSize;
+
+            mapInfo = (MapInfo_t *)::malloc(totalSize);
+
+            //初始化
+            ::memeset(mapInfo, 0x00, totalSize);
+            mapInfo->totalSize = totalSize;
+            mapInfo->cliCount = cliCount;
+            mapInfo->msgCount = msgCount;
+            mapInfo->cliBitMapSize = cliBitMapSize;
+            mapInfo->subInfoSize = subInfoSize;
+
+            mapInfo->cliMap = (CliSubMap_t *)((unsigned char *)mapInfo + sizeof(MapInfo_t));
+            size = sizeof(CliSubMap_t) + sizeof(int) * msgCount;
+
+            for (int iLoop = 0; iLoop < cliCount; iLoop++) 
+            {
+                CliSubMap_t * cli = (CliSubMap_t *)((unsigned char *)mapInfo->cliMap + size * iLoop);
+                
+                for (int index = 0; index < msgCount; index++)
                 {
-                    
+                    cli->subInfoIndex[index] = -1;
                 }
+            }
 
-                return tmp;
-            }
-            else
+            mapInfo->msgMap = (MsgSubMap_t *)((unsigned char *)mapInfo + sizeof(MapInfo_t) + (sizeof(CliSubMap_t) + (sizeof(int) * msgCount)) * cliCount);
+
+            mapInfo->subInfo = (SubInfo_t *)((unsigned char *)mapInfo + sizeof(MapInfo_t) + (sizeof(CliSubMap_t) + (sizeof(int) * msgCount)) * cliCount  + (sizeof(MsgSubMap_t) + cliBitMapSize) * msgCount);
+
+
+            //拷贝旧值
+            if (basicMapInfo == NULL)
             {
-               //无需扩容
-               return NULL;
+                return mapInfo;
             }
+
+            if (basicMapInfo->cliCount == cliCount)            
+            {
+
+            }
+
+
+            return mapInfo;
         }
+
+       
 
     public:
+
         ThreadSubTable()
         {
-            ::pthread_mutex_init(&m_lock, NULL);
-            ::pthread_mutex_init(&m_readLock, NULL);
-            m_readRecord = 0;
+            pthread_mutex_init(&m_lock, NULL);
 
-            MapInfo_t mapinfo;
-            mapinfo.cliCount = 16;
-            mapinfo.MsgCount = 128;
-            mapinfo.subMapSize = 2;
+            MapInfo_t tmpMapInfo = {0};
 
-            m_map = NULL;
-            m_map = ExpandMap(mapinfo);
+            tmpMapInfo.cliCount = 16;
+
+            tmpMapInfo.msgCount = 32;
+
+            tmpMapInfo.cliBitMapSize = tmpMapInfo.cliCount / 8;
+
+            tmpMapInfo.subInfoSize = 128;
+
+            m_mapInfo = NULL;
+
+            m_mapInfo = ExpandMap(tmpMapInfo, NULL);
+
+            if (m_mapInfo != NULL)
+            {
+                m_waitFlushMapInfo = (MapInfo_t *)::malloc(m_mapInfo->totalSize)
+                ::memcpy(m_waitFlushMapInfo, m_mapInfo, m_mapInfo->totalSize);
+            }
+        }
+
+        ~ThreadSubTable()
+        {
 
         }
 
-        int ThrRegister()
+        int CliRegister()
         {
-            MapInfo_t * map = NULL;
-            MapInfo_t mapInfo;
+            CliSubMap_t * cli = NULL;
 
+            MapInfo_t * mapInfo = NULL;
 
-            cliIndex = -1;
-            ClientSubMap_t * cli;
-            ClientSubInfoIndex_t * cliSubInfo;
-            unsigned int size = sizeof(ClientSubMap_t) + sizeof(ClientSubInfoIndex_t);
+            MapInfo_t tmpMapInfo = {0};
 
-            unsigned int readRecord = m_readRecord;
-            if (m_map == NULL) 
+            int cliIndex = 0;
+
+            int size = 0;
+
+            if (m_mapInfo == NULL)
             {
                 return -1;
             }
 
-            pthread_mutex_lock(&m_lock);
 
-            for (int iLoop = 0; iLoop < m_map->cliCount; iLoop++)
+            ::pthread_mutex_lock(&m_lock);
+            size = sizeof(CliSubMap_t) + sizeof(int) * m_waitFlushMapInfo->msgCount;
+            for (int iLoop = 0; iLoop < m_waitFlushMapInfo->cliCount; iLoop++)
             {
-                cli = (ClientSubMap_t *)((char *)m_map + sizeof(MapInfo_t) + size * iLoop);
-                cliSubInfo = (ClientSubInfoIndex_t *)((char *)cli + sizeof(ClientSubMap_t);
+                cli = (CliSubMap_t *)((unsigned char *)(m_waitFlushMapInfo->cliMap) + size * iLoop);
                 if (cli->st == 0)
                 {
-                    cliIndex = iLoop;
-                    cli->st = 1;
-                    pthread_mutex_unlock(&m_lock);
-                    return cliIndex;
+                    //找到空闲
+                    cli->st = 1; 
+                    ::pthread_mutex_unlock(&m_lock);
+                    return iLoop;
                 }
             }
 
-            //cli 数量不足 扩容
-            cliIndex = m_map->cliCount;
+            //cli分配完成 需要扩展
+            cliIndex = m_waitFlushMapInfo->cliCount;
 
-            mapInfo.cliCount = m_map->cliCount + 16;
-            mapInfo.msgCount = m_map->msgCount;
-            mapInfo.subMapSize = mapInfo.cliCount / 8;
+            tmpMapInfo.cliCount = m_waitFlushMapInfo->cliCount;
 
-            map = ExpandMap(mapInfo);
+            tmpMapInfo.msgCount = m_waitFlushMapInfo->msgCount;
 
-
-            //设置开始写 读进入安全读模式
-            m_IsWrite = 1;
-            while (true) 
+            tmpMapInfo.cliBitMapSize = m_waitFlushMapInfo->cliCount / 8;
+            tmpMapInfo.subInfoSize = m_waitFlushMapInfo->subInfoSize;
+            mapInfo = ExpandMap(tmpMapInfo, m_waitFlushMapInfo);
+            
+            if (mapInfo == NULL)
             {
-                //等待处于非安全读下的操作完成 经验锁
-                ::usleep(3000);
-                if (readRecord == m_readRecord)
-                {
-                    break;
-                }
-                else
-                {
-                    readRecord = m_readRecord;
-                }
-            }
-                
-            //安全写
-            ::pthread_mutex_lock(&m_readLock);
-            ::free(m_map);
-            m_map = map;
-            ::pthread_mutex_unlock(&m_readLock);
-
-            m_IsWrite = 0;
-
-            pthread_mutex_unlock(&m_lock);
-            return cliIndex;
-        }
-
-        int ThrUnRegister(int cliIndex)
-        {
-            return 0;
-        }
-
-        int MsgRegister(int msgID, int cliIndex, Function3<void(void *, unsigned int, void *)> & handleCB, Function3<void(void *, unsigned int, void *)> & errCB, void * userParam);
-        {
-            return 0;
-        }
-
-        int MsgUnRegister(int msgIndex, int cliIndex, int msgID)
-        {
-            return 0;
-        }
-
-
-        int QueryMsgSubMap(int msgIndex, int cliIndex, unsigned char * MsgSubCliMap, unsigned int sizeOfMap, unsigned int & lenOfMap)
-        {
-            if (m_IsWrite == 0)
-            {
-                m_readRecord++;
-                m_nowMap = NULL;
+                cliIndex = -1;
             }
             else
             {
-                //发生写 需要保证读安全
-                ::pthread_mutex_lock(&m_readLock);
-                m_nowMap = NULL;
-                ::pthread_mutex_unlock(&m_readLock);
+                //cliIndex 可用
+                ::free(m_waitFlushMapInfo);
+
+                m_waitFlushMapInfo = mapInfo;
+
+                cli = (CliSubMap_t *)((unsigned char *)(m_waitFlushMapInfo->cliMap) + size * cliIndex);
+                cli->st = 1;
             }
+
+            ::pthread_mutex_unlock(&m_lock);
+            return cliIndex;
+        }
+
+        int CliUnRegister()
+        {
+            ::pthread_mutex_lock(&m_lock);
+
+            ::pthread_mutex_unlock(&m_lock);
             return 0;
         }
 
-        int QueryMsgSubCliInfo(int msgIndex, int cliIndex, int msgID, ClientSubInfoIndex_t & subInfo)
+        int MsgRegister()
+        {
+            ::pthread_mutex_lock(&m_lock);
+
+            ::pthread_mutex_unlock(&m_lock);
+            return 0;
+        }
+
+        int MsgUnRegister()
+        {
+            ::pthread_mutex_lock(&m_lock);
+
+            ::pthread_mutex_unlock(&m_lock);
+            return 0;
+        }
+
+        void Flush()
+        {
+
+        }
+
+        int QuerySubInfo(int msgIndex, int cliIndex, SubInfo_t *  SubInfo)
         {
             return 0;
+        }
+
+        int QueryCliSubMap(int msgIndex, void * bitMap, unsigned int sizeOfMap)
+        {
+            return 0;
+        }
+
+        bool CheckBitMap(void * bitMap, unsigned int lenOfMap, int checkIndex)
+        {
+            return false;
         }
     };
 }
