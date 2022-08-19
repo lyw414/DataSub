@@ -74,6 +74,19 @@ namespace LYW_CODE
             return *this;
         }
 
+
+        bool operator== (void * ptr)
+        {
+            return (m_func.stFunc == (stFunc_t)ptr);
+        }
+
+        bool operator!= (void * ptr)
+        {
+            return (m_func.stFunc != (stFunc_t)ptr);
+        }
+
+
+
     };
 
 
@@ -144,6 +157,18 @@ namespace LYW_CODE
             return *this;
         }
 
+        bool operator== (void * ptr)
+        {
+            return (m_func.stFunc == (stFunc_t)ptr);
+        }
+
+        bool operator!= (void * ptr)
+        {
+            return (m_func.stFunc != (stFunc_t)ptr);
+        }
+
+
+
     };
 
     
@@ -212,6 +237,18 @@ namespace LYW_CODE
             m_func = ptr.m_func;
             return *this;
         }
+
+
+        bool operator== (void * ptr)
+        {
+            return (m_func.stFunc == (stFunc_t)ptr);
+        }
+
+        bool operator!= (void * ptr)
+        {
+            return (m_func.stFunc != (stFunc_t)ptr);
+        }
+
     };
 
 }

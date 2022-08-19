@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <pthread.h>
+
 int tag;
 int * RdRecord;
 unsigned long long RdCount;
