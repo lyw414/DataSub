@@ -1,2 +1,2 @@
 all:
-	g++ -g -std=c++98 -o Test test.cpp ProTransAPI.h -I ./ -lpthread
+	g++ -O2 -std=c++98 -o Test test.cpp ProTransAPI.h -I ./ -lpthread -ldl

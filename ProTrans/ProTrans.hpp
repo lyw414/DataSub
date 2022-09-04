@@ -11,6 +11,8 @@
 #include <errno.h>
 
 #include <list>
+
+
 namespace LYW_CODE
 {
     class ProTrans {
@@ -276,7 +278,7 @@ namespace LYW_CODE
                     typeTable->nodeInfo.size = it->maxRecordNum + 3;
                     typeTable->nodeInfo.r_B = 0;
                     typeTable->nodeInfo.r_E = 1;
-                    typeTable->nodeInfo.w_B = 1;
+                    typeTable->nodeInfo.w_B = 2;
                     typeTable->nodeInfo.nodeSize = it->blockSize;
 
                     //缓存表索引详情
@@ -296,6 +298,8 @@ namespace LYW_CODE
                     typeTable->cache = ptr;
                     ptr += typeTable->cacheInfo.size;
                 }
+
+                m_cacheMap->st = 1;
             }
             else
             {
@@ -350,8 +354,13 @@ namespace LYW_CODE
         {
             TypeTable_t * typeTable = NULL;
 
+            int tmp_rb;
+            int tmp_re;
+            int tmp_wb;
+
             int index = 0;
             int next = 0;
+            int next_next = 0;
             int pre = 0;
 
             if (m_st == 0)
@@ -368,35 +377,45 @@ namespace LYW_CODE
             {
                 ::pthread_mutex_lock(&typeTable->lock);
                 index = typeTable->nodeInfo.w_B;
+                pre = PreIndex(index, typeTable->nodeInfo.size);
                 next = NextIndex(index, typeTable->nodeInfo.size);
+                next_next = NextIndex(next, typeTable->nodeInfo.size);
 
-                if(index == typeTable->nodeInfo.r_B && next == typeTable->nodeInfo.r_E)
+                tmp_rb = typeTable->nodeInfo.r_B;
+                tmp_re = typeTable->nodeInfo.r_E;
+                tmp_wb = typeTable->nodeInfo.w_B;
+
+                if(next == typeTable->nodeInfo.r_B && next_next == typeTable->nodeInfo.r_E)
                 {
                     //写节点已满
                     ::pthread_mutex_unlock(&typeTable->lock);
                     ::usleep(10000);
                     continue;
                 }
+
                 
                 //可写节点后移
                 typeTable->nodeInfo.w_B = next;
+                typeTable->node[next].st = NODE_ST_WW;
+                typeTable->node[next].nodeID++;
 
                 //覆盖读节点
-                if (typeTable->nodeInfo.r_B == index)
+                if (typeTable->nodeInfo.r_B == next)
                 {
-                    typeTable->nodeInfo.r_B = next;
+                    typeTable->nodeInfo.r_B = next_next;
+                    typeTable->node[next_next].st = NODE_ST_WW;
+                    typeTable->node[next_next].nodeID++;
                 }
-
-                typeTable->node[index].st = NODE_ST_WW;
-                typeTable->node[index].nodeID++;
+                typeTable->node[pre].st = NODE_ST_WW;
+                typeTable->node[pre].nodeID++;
                 ::pthread_mutex_unlock(&typeTable->lock);
                 break;
             }
-            
+
             //自旋等待读完成
             while(true)
             {
-                if (typeTable->node[index].rdRecord == 0)
+                if (typeTable->node[pre].rdRecord == 0)
                 {
                     break;
                 }
@@ -404,39 +423,35 @@ namespace LYW_CODE
             }
 
             //写数据
-            ::memcpy(typeTable->cache + typeTable->node[index].index, data, lenOfData);
-
-            typeTable->node[index].len = lenOfData;
+            ::memcpy(typeTable->cache + typeTable->node[pre].index, data, lenOfData);
+            typeTable->node[pre].len = lenOfData;
 
             //提交index
-            ::pthread_mutex_unlock(&typeTable->lock);
-            typeTable->node[index].st = NODE_ST_RR;
-            if (index == typeTable->nodeInfo.r_E)
+            ::pthread_mutex_lock(&typeTable->lock);
+            typeTable->node[pre].st = NODE_ST_RR;
+            int t = 0;
+            while (true)
             {
-                typeTable->node[index].st = NODE_ST_RR;
-                typeTable->nodeInfo.r_E = next;
-                while(true)
+                if (index == typeTable->nodeInfo.w_B)
                 {
-                    if (next == typeTable->nodeInfo.w_B)
-                    {
-                        break;
-                    }
-                    
-                    if (typeTable->node[next].st == NODE_ST_RR)
-                    {
-
-                        next = NextIndex(next, typeTable->nodeInfo.size);
-                        typeTable->nodeInfo.r_E = next;
-                    }
-                    else
-                    {
-                        next = NextIndex(next, typeTable->nodeInfo.size);
-                        typeTable->nodeInfo.r_E = next;
-                        break;
-                    }
+                    break;
+                }
+                
+                if (pre == typeTable->nodeInfo.r_E && typeTable->node[pre].st == NODE_ST_RR)
+                {
+                    typeTable->nodeInfo.r_E = index;
+                    pre = index;
+                    index = next;
+                    next = NextIndex(next, typeTable->nodeInfo.size);
+                }
+                else
+                {
+                    break;
                 }
             }
             ::pthread_mutex_unlock(&typeTable->lock);
+
+            //::pthread_cond_broadcast(&typeTable->cond);
             return 0;
         }
 
@@ -494,7 +509,14 @@ namespace LYW_CODE
                 {
                     //没有新数据阻塞读
                     ::pthread_mutex_unlock(&typeTable->lock);
-                    usleep(10000);
+
+                    usleep(0);
+                    //::pthread_mutex_lock(&typeTable->lockCond);
+                    //::pthread_cond_wait(&typeTable->cond, &typeTable->lockCond);
+                    //::pthread_mutex_unlock(&typeTable->lockCond);
+
+                    //::pthread_cond_wait(&typeTable->cond, &typeTable->lock);
+                    //::pthread_mutex_unlock(&typeTable->lock);
                     continue;
                 }
 
@@ -503,11 +525,10 @@ namespace LYW_CODE
                 typeTable->node[index].rdRecord++;
                 BH->index = index;
                 BH->id = typeTable->node[index].nodeID;
-
                 ::pthread_mutex_unlock(&typeTable->lock);
                 break;
             }
-            
+
             *len = typeTable->node[index].len;
             if (sizeOfData >=  typeTable->node[index].len)
             {
@@ -536,6 +557,16 @@ namespace LYW_CODE
 
             return 0;
         }
+
+        //void ShowNode(Node_t * node, int size )
+        //{
+        //    printf("*************Begin***************\n")
+        //    for(int iLoop = 0; iLoop < size; iLoop++)
+        //    {
+        //        printf("index %d ST  ") 
+        //    }
+        //    printf("*************End***************\n")
+        //}
     };
 }
 #endif
