@@ -100,6 +100,11 @@ namespace LYW_CODE
         int m_st;
     
     public:
+        int m_wwrCount ;
+        int m_wwwCount ;
+        int m_rwwCount ;
+
+    public:
         typedef struct _IndexBlock {
             unsigned int id;
             int index;
@@ -143,6 +148,10 @@ namespace LYW_CODE
             m_shmID = -1;
 
             ::pthread_mutex_init(&m_lock, NULL);
+
+            m_wwrCount = 0;
+            m_wwwCount = 0;
+            m_rwwCount = 0;
         }
 
         /**
@@ -208,7 +217,7 @@ namespace LYW_CODE
 
                 totalSize += it->maxRecordNum * sizeof(Node_t);
 
-                totalSize += it->blockSize;
+                totalSize += it->blockSize * it->maxRecordNum;
             }
 
             totalSize += (maxType + 1) * sizeof(TypeTable_t *);
@@ -388,8 +397,9 @@ namespace LYW_CODE
                 if(next == typeTable->nodeInfo.r_B && next_next == typeTable->nodeInfo.r_E)
                 {
                     //写节点已满
+                    m_wwwCount++;
                     ::pthread_mutex_unlock(&typeTable->lock);
-                    ::usleep(10000);
+                    ::usleep(0);
                     continue;
                 }
 
@@ -419,7 +429,8 @@ namespace LYW_CODE
                 {
                     break;
                 }
-                ::usleep(10000);
+                ::usleep(0);
+                m_wwrCount++;
             }
 
             //写数据
@@ -491,7 +502,7 @@ namespace LYW_CODE
             while(true)
             {
                 ::pthread_mutex_lock(&typeTable->lock);
-                if (BH->index < 0 || BH->index >= typeTable->nodeInfo.size || BH->index == typeTable->nodeInfo.r_B || typeTable->node[BH->index].nodeID != BH->id)
+                if (BH->index < 0 || BH->index >= typeTable->nodeInfo.size || typeTable->node[BH->index].nodeID != BH->id)
                 {
                     //id 发生覆盖 读取最旧的数据
                     index = typeTable->nodeInfo.r_B;
@@ -508,6 +519,7 @@ namespace LYW_CODE
                 if (next == typeTable->nodeInfo.r_E)
                 {
                     //没有新数据阻塞读
+                    m_rwwCount++;
                     ::pthread_mutex_unlock(&typeTable->lock);
 
                     usleep(0);

@@ -4,7 +4,7 @@
 typedef struct _Data {
     int index;
     long long time;
-    char tmp[16];
+    char tmp[256];
 } Data_t;
 
 
@@ -27,7 +27,7 @@ void WrDo(int index, int count, int interval)
     {
         //printf("%d %d\n",index, iLoop);
         ::gettimeofday(&wr,NULL);
-        data.time = wr.tv_sec * 1000 + wr.tv_usec / 1000;
+        data.time = wr.tv_sec * 1000000 + wr.tv_usec ;
         //data.time = iLoop;
         ::gettimeofday(&begin,NULL);
         proTrans.Write(0, (unsigned char *)&data, sizeof(Data_t));
@@ -38,7 +38,7 @@ void WrDo(int index, int count, int interval)
     
     data.time = 0;
     proTrans.Write(0, (unsigned char *)&data, sizeof(Data_t));
-    printf("Index %d Wr TPS %lld\n", index, c * 1000 / times);
+    printf("Index %d Wr TPS %lld wwr %d www %d\n", index, c * 1000 / times, proTrans.m_wwrCount, proTrans.m_wwwCount);
 
     sleep(1);
 }
@@ -55,21 +55,31 @@ void RdDo(int index, int interval)
     struct timeval rd;
     long long useTime = 0;
 
+    long long max = 0;
+
     Data_t data;
 
     int Num = 0;
-    int xx = 0;
-
+    long long xx = 0;
     while(true)
     {
         proTrans.Read(&BH, 0, (unsigned char *)&data, sizeof(Data_t), &len);
         ::gettimeofday(&rd,NULL);
-        useTime = rd.tv_sec * 1000 + rd.tv_usec / 1000 - data.time;
+        xx = rd.tv_sec * 1000000 + rd.tv_usec - data.time;
         //useTime = data.time;
-        xx++;
-        if (useTime > 40 )
+        Num++;
+        if (xx > 100000000)
         {
-            printf("%dR %d::%lld %d\n",index, data.index, useTime, xx);
+            printf("%dR %d::ReadCount %d rww %d maxInteval %lld interval %lld\n ",index, data.index, Num, proTrans.m_rwwCount, max, useTime / Num);
+            break;
+        }
+        else
+        {
+           useTime += xx;
+           if (xx > max)
+           {
+                max = xx;
+           }
         }
         ::usleep(interval);
     }
@@ -87,12 +97,42 @@ int main(int argc, char * argv[])
 
     proTrans.Init(0x02);
     
-    int WNum = 4;
+
+    int WNum = 1;
     int RNum = 10;
 
-    int WCount = 10000;
+    int WCount = 1000000;
     int WInterval = 0;
     int RInterval = 0;
+
+
+    if (argc > 1)
+    {
+        WNum = atoi(argv[1]);
+    }
+
+    if (argc > 2)
+    {
+        RNum = atoi(argv[2]);
+    }
+
+    if (argc > 3)
+    {
+        WInterval = atoi(argv[3]);
+    }
+
+
+    if (argc > 4)
+    {
+        RInterval = atoi(argv[4]);
+    }
+
+
+    if (argc > 5)
+    {
+        WCount = atoi(argv[5]);
+    }
+
      
     for (int iLoop = 0; iLoop < RNum; iLoop++)
     {
