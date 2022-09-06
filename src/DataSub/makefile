@@ -9,6 +9,7 @@ INC_DIR += -I Hash
 INC_DIR += -I ProClientTable
 INC_DIR += -I TaskPool 
 INC_DIR += -I ProSubTable
+INC_DIR += -I RWLock
 
 
 FLAGS = -lpthread

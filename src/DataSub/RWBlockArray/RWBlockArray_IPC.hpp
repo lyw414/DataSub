@@ -333,6 +333,7 @@ namespace LYW_CODE
                 ::shmdt(m_shmInfo);
                 m_shmInfo = NULL;
                 m_shmID = -1;
+                ::pthread_mutex_unlock(&m_lock);
 
             }
             else

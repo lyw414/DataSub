@@ -31,16 +31,13 @@ namespace LYW_CODE
 #pragma pack(1)
         typedef struct _CliSubMap {
             int st;
-            //size为 MapInfo_t::msgCount
-            int subInfoIndex[0];
         } CliSubMap_t;
 
-
+        
         typedef struct _MsgSubMap {
             int st;
             int msgID;
-            //size为 MapInfo_t::cliBitMapSize
-            unsigned char cliBitMap[0];
+            SubInfo_t * cliSubInfo[0];
         } MsgSubMap_t;
 
 
@@ -51,16 +48,17 @@ namespace LYW_CODE
             int cliCount;   
             //初始定义为 32 按 32递增
             int msgCount;
-            //为 cliCount / 8
-            int cliBitMapSize; 
             //初始定义为 128 按 128递增
             int subInfoSize;
+
             //客户注册map开始地址
             CliSubMap_t * cliMap;
             //消息注册map开始地址
             MsgSubMap_t * msgMap;
             //订阅详情（数组）开始地址 下标为索引 在每个cli后存在一个msgMap内登记了该索引
             SubInfo_t * subInfo;
+
+
 
         } MapInfo_t;
 #pragma pack()
@@ -73,58 +71,55 @@ namespace LYW_CODE
 
         MapInfo_t * m_mapInfo;
         std::map<int,int> m_msgMap;
+        std::map<int,int> m_proMsgMap;
 
         MapInfo_t * m_newMapInfo;
-        std::map<int,int> m_newmsgMap;
+        std::map<int,int> m_newMsgMap;
+        std::map<int,int> m_newProMsgMap;
 
 
         //写发生在该map中 由Flush冲洗至m_mapInfo(仅仅交换地址即可）为了保证读的高效行 写数据生效延迟较大 通常为3s左右
         MapInfo_t * m_waitFlushMapInfo;
         std::map<int,int> m_waitFlushMsgMap;
+        std::map<int,int> m_waitFlushProMsgMap;
+        
+        int m_isNeedFlush;
+
+        int m_isProMsgNeedFlush;
+
+        int m_tag;
+
+        pthread_t m_thread;
+
  
     private:
-        inline void SetBit(unsigned char * bitMap, int index, unsigned char setValue)
+        static void * DoFlush_(void * ptr)
         {
-            unsigned char bit;
-            unsigned int byteIndex = index / 8;
-            unsigned int bitIndex = 7 - (index - byteIndex * 8);
- 
-            bit = 0x01;
-            bit = bit << bitIndex;
-
-            if (setValue == 0x00)
+            ThreadSubTable * self = (ThreadSubTable *)ptr;
+            if (self != NULL)
             {
-                bitMap[byteIndex] &= (~bit);
-
+                self->DoFlush();
             }
-            else
-            {
-                bitMap[byteIndex] |= bit;
-            }
+            return NULL;
         }
-        
-        /**
-         * @brief               获取bitMap 索引下 bit位值 为减少检测次数 请自行保证 index 的合法性 崩溃概不负责
-         * @param[in]bitMap     bitMap 不做长度检测
-         * @param[in]index      索引
-         *
-         * @return      0       索引位为 0 
-         *              1       索引位位 1
-         */
-        inline int GetBit(unsigned char * bitMap, int index)
+
+        void DoFlush()
         {
-            unsigned char bit = 0x01;
-            unsigned int byteIndex = index / 8;
-            unsigned int bitIndex = 7 - (index - byteIndex * 8);
-            bit = bit << bitIndex;
-            
-            if ((bitMap[byteIndex] & bit) == 0)
+            while (m_tag == 1)     
             {
-                return 0;
-            }
-            else
-            {
-                return 1;
+
+                if (m_isNeedFlush != 0)
+                {
+                    Flush();
+                }
+                else if (m_isProMsgNeedFlush != 0)
+                {
+                    FlushProMsgMap();
+                }
+                else
+                {
+                    ::sleep(1);
+                }
             }
         }
 
@@ -137,13 +132,11 @@ namespace LYW_CODE
 
             int cliCount = expandMapInfo.cliCount;
             int msgCount = expandMapInfo.msgCount;
-            int cliBitMapSize = cliCount / 8;
             int subInfoSize = expandMapInfo.subInfoSize;
 
 
             int cpyCliCount = 0;
             int cpyMsgCount = 0;
-            int cpyCliBitMapSize = 0;
             int cpySubInfoSize = 0;
 
 
@@ -157,7 +150,7 @@ namespace LYW_CODE
                 return NULL;
             }
 
-            totalSize = sizeof(MapInfo_t) + (sizeof(CliSubMap_t) + (sizeof(int) * msgCount)) * cliCount  + (sizeof(MsgSubMap_t) + cliBitMapSize) * msgCount + sizeof(SubInfo_t) * subInfoSize;
+            totalSize = sizeof(MapInfo_t) + sizeof(CliSubMap_t) * cliCount  + (sizeof(MsgSubMap_t) + sizeof(SubInfo_t *) * cliCount) * msgCount + sizeof(SubInfo_t) * subInfoSize;
 
             mapInfo = (MapInfo_t *)::malloc(totalSize);
 
@@ -166,26 +159,13 @@ namespace LYW_CODE
             mapInfo->totalSize = totalSize;
             mapInfo->cliCount = cliCount;
             mapInfo->msgCount = msgCount;
-            mapInfo->cliBitMapSize = cliBitMapSize;
             mapInfo->subInfoSize = subInfoSize;
 
             mapInfo->cliMap = (CliSubMap_t *)((unsigned char *)mapInfo + sizeof(MapInfo_t));
-            size = sizeof(CliSubMap_t) + sizeof(int) * msgCount;
 
-            for (int iLoop = 0; iLoop < cliCount; iLoop++) 
-            {
-                CliSubMap_t * cli = (CliSubMap_t *)((unsigned char *)mapInfo->cliMap + size * iLoop);
-                
-                for (int index = 0; index < msgCount; index++)
-                {
-                    cli->subInfoIndex[index] = -1;
-                }
-            }
+            mapInfo->msgMap = (MsgSubMap_t *)((unsigned char *)mapInfo + sizeof(MapInfo_t) + sizeof(CliSubMap_t) * cliCount);
 
-            mapInfo->msgMap = (MsgSubMap_t *)((unsigned char *)mapInfo + sizeof(MapInfo_t) + (sizeof(CliSubMap_t) + (sizeof(int) * msgCount)) * cliCount);
-
-            mapInfo->subInfo = (SubInfo_t *)((unsigned char *)mapInfo + sizeof(MapInfo_t) + (sizeof(CliSubMap_t) + (sizeof(int) * msgCount)) * cliCount  + (sizeof(MsgSubMap_t) + cliBitMapSize) * msgCount);
-
+            mapInfo->subInfo = (SubInfo_t *)((unsigned char *)mapInfo + sizeof(MapInfo_t) + sizeof(CliSubMap_t) * cliCount + (sizeof(MsgSubMap_t) + sizeof(SubInfo_t *) * cliCount) * msgCount);
 
             //拷贝旧值
             if (basicMapInfo == NULL)
@@ -213,16 +193,6 @@ namespace LYW_CODE
                 cpyMsgCount = msgCount;
             }
 
-            if (basicMapInfo->cliBitMapSize < cliBitMapSize)
-            {
-                cpyCliBitMapSize = basicMapInfo->cliBitMapSize;
-            }
-            else
-            {
-                cpyCliBitMapSize = cliBitMapSize;
-            }
-
-
             if (basicMapInfo->subInfoSize < subInfoSize)
             {
                 cpySubInfoSize = basicMapInfo->subInfoSize;
@@ -233,21 +203,15 @@ namespace LYW_CODE
             }
 
            
-            size = sizeof(CliSubMap_t) + sizeof(int) * mapInfo->msgCount;
-            size_ = sizeof(CliSubMap_t) + sizeof(int) * basicMapInfo->msgCount;
+            
+            //cliMap copy
+            ::memcpy(mapInfo->cliMap, basicMapInfo->cliMap, sizeof(CliSubMap_t) * cpyCliCount);
+            
+            
+            //msgMap copy
+            size = sizeof(MsgSubMap_t) + mapInfo->cliCount * sizeof(SubInfo_t *);
+            size_ = sizeof(MsgSubMap_t) + basicMapInfo->cliCount * sizeof(SubInfo_t *);
 
-            for(int iLoop = 0; iLoop < cpyCliCount; iLoop++)
-            {
-                CliSubMap_t * cli = (CliSubMap_t *)((unsigned char *)(mapInfo->cliMap) + size * iLoop);
-                CliSubMap_t * cli_ = (CliSubMap_t *)((unsigned char *)(basicMapInfo->cliMap) + size_ * iLoop);
-                ::memcpy(cli, cli_, sizeof(CliSubMap_t));
-                ::memcpy(cli->subInfoIndex, cli_->subInfoIndex, sizeof(int) * cpyMsgCount);
-
-            }
-
-
-            size = sizeof(MsgSubMap_t) + mapInfo->cliBitMapSize;
-            size_ = sizeof(MsgSubMap_t) + basicMapInfo->cliBitMapSize;
             for(int iLoop = 0; iLoop < cpyMsgCount; iLoop++)
             {
                 MsgSubMap_t * cli = (MsgSubMap_t *)((unsigned char *)(mapInfo->msgMap) + size * iLoop);
@@ -255,12 +219,11 @@ namespace LYW_CODE
 
                 ::memcpy(cli, cli_, sizeof(MsgSubMap_t));
 
-                ::memcpy(cli->cliBitMap, cli_->cliBitMap, cpyCliBitMapSize);
+                ::memcpy(cli->cliSubInfo, cli_->cliSubInfo, cpyCliCount * sizeof(SubInfo_t *));
             }
 
 
             ::memcpy(mapInfo->subInfo, basicMapInfo->subInfo, sizeof(SubInfo_t) * cpySubInfoSize);
-
 
             return mapInfo;
         }
@@ -270,6 +233,12 @@ namespace LYW_CODE
 
         ThreadSubTable()
         {
+            m_tag = 1;
+
+            m_isNeedFlush = 0;
+            
+            m_isProMsgNeedFlush = 0;
+
             pthread_mutex_init(&m_lock, NULL);
 
             pthread_mutex_init(&m_lock1, NULL);
@@ -279,8 +248,6 @@ namespace LYW_CODE
             tmpMapInfo.cliCount = 16;
 
             tmpMapInfo.msgCount = 32;
-
-            tmpMapInfo.cliBitMapSize = tmpMapInfo.cliCount / 8;
 
             tmpMapInfo.subInfoSize = 128;
 
@@ -293,14 +260,76 @@ namespace LYW_CODE
                 m_waitFlushMapInfo = (MapInfo_t *)::malloc(m_mapInfo->totalSize);
                 ::memcpy(m_waitFlushMapInfo, m_mapInfo, m_mapInfo->totalSize);
                 m_waitFlushMapInfo->cliMap = (CliSubMap_t *)((unsigned char *)m_waitFlushMapInfo + sizeof(MapInfo_t));
-                m_waitFlushMapInfo->msgMap = (MsgSubMap_t *)((unsigned char *)m_waitFlushMapInfo + sizeof(MapInfo_t) + (sizeof(CliSubMap_t) + (sizeof(int) * m_waitFlushMapInfo->msgCount)) * m_waitFlushMapInfo->cliCount);
-                m_waitFlushMapInfo->subInfo = (SubInfo_t *)((unsigned char *)m_waitFlushMapInfo + sizeof(MapInfo_t) + (sizeof(CliSubMap_t) + (sizeof(int) * m_waitFlushMapInfo->msgCount)) * m_waitFlushMapInfo->cliCount  + (sizeof(MsgSubMap_t) + m_waitFlushMapInfo->cliBitMapSize) * m_waitFlushMapInfo->msgCount);
+
+                m_waitFlushMapInfo->msgMap = (MsgSubMap_t *)((unsigned char *)m_waitFlushMapInfo + sizeof(MapInfo_t) + sizeof(CliSubMap_t) * m_waitFlushMapInfo->cliCount);
+
+                m_waitFlushMapInfo->subInfo = (SubInfo_t *)((unsigned char *)m_waitFlushMapInfo + sizeof(MapInfo_t) + sizeof(CliSubMap_t) * m_waitFlushMapInfo->cliCount  + (sizeof(MsgSubMap_t) + sizeof(SubInfo_t *) * m_waitFlushMapInfo->cliCount) * m_waitFlushMapInfo->msgCount);
             }
+
+            ::pthread_create(&m_thread, NULL, ThreadSubTable::DoFlush_, this);
+
         }
 
         ~ThreadSubTable()
         {
+            if (m_tag == 1)
+            {
+                m_tag = 0;
+                void * res;
+                pthread_join(m_thread , &res);
+            }
+        }
 
+        int SetProMsgMap(int msgID, int msgIndex)
+        {
+            ::pthread_mutex_lock(&m_lock);
+            m_waitFlushProMsgMap[msgID] = msgIndex;
+            m_isProMsgNeedFlush = 1;
+            ::pthread_mutex_unlock(&m_lock);
+            return 0;
+        }
+
+        int GetProMsgMap(int msgID)
+        {
+            int st = 0;
+            int msgIndex = -1;
+            std::map<int, int> ::iterator it;
+
+            st = m_rwLock.ReadLock();
+            if (st == 0)
+            {
+                if ((it = m_proMsgMap.find(msgID)) != m_proMsgMap.end())
+                {
+                    msgIndex = it->second;
+                }
+
+            }
+            else
+            {
+                if ((it = m_newProMsgMap.find(msgID)) != m_newProMsgMap.end())
+                {
+                    msgIndex = it->second;
+                }
+
+            }
+            m_rwLock.ReadUnLock(st);
+
+            return msgIndex;
+        }
+
+        void FlushProMsgMap()
+        {
+            ::pthread_mutex_lock(&m_lock1);
+            ::pthread_mutex_lock(&m_lock);
+            m_isProMsgNeedFlush = 0;
+            m_newProMsgMap = m_waitFlushProMsgMap;
+            ::pthread_mutex_unlock(&m_lock);
+
+            MapInfo_t *tmp = m_mapInfo;
+            m_rwLock.WriteLock(500000);
+            m_proMsgMap = m_newProMsgMap;
+            m_rwLock.WriteUnLock(500000);
+            ::pthread_mutex_unlock(&m_lock1);
         }
 
         int CliRegister()
@@ -322,14 +351,14 @@ namespace LYW_CODE
             }
 
             ::pthread_mutex_lock(&m_lock);
-            size = sizeof(CliSubMap_t) + sizeof(int) * m_waitFlushMapInfo->msgCount;
+
+            cli = m_waitFlushMapInfo->cliMap;
             for (int iLoop = 0; iLoop < m_waitFlushMapInfo->cliCount; iLoop++)
             {
-                cli = (CliSubMap_t *)((unsigned char *)(m_waitFlushMapInfo->cliMap) + size * iLoop);
-                if (cli->st == 0)
+                if (cli[iLoop].st == 0)
                 {
                     //找到空闲
-                    cli->st = 1; 
+                    cli[iLoop].st = 1; 
                     ::pthread_mutex_unlock(&m_lock);
                     return iLoop;
                 }
@@ -338,11 +367,9 @@ namespace LYW_CODE
             //cli分配完成 需要扩展
             cliIndex = m_waitFlushMapInfo->cliCount;
 
-            tmpMapInfo.cliCount = m_waitFlushMapInfo->cliCount;
-
+            tmpMapInfo.cliCount = m_waitFlushMapInfo->cliCount + 16;
             tmpMapInfo.msgCount = m_waitFlushMapInfo->msgCount;
 
-            tmpMapInfo.cliBitMapSize = m_waitFlushMapInfo->cliCount / 8;
             tmpMapInfo.subInfoSize = m_waitFlushMapInfo->subInfoSize;
             mapInfo = ExpandMap(tmpMapInfo, m_waitFlushMapInfo);
             
@@ -354,13 +381,11 @@ namespace LYW_CODE
             {
                 //cliIndex 可用
                 ::free(m_waitFlushMapInfo);
-
                 m_waitFlushMapInfo = mapInfo;
-
-                cli = (CliSubMap_t *)((unsigned char *)(m_waitFlushMapInfo->cliMap) + size * cliIndex);
-                cli->st = 1;
+                m_waitFlushMapInfo->cliMap[cliIndex].st = 1;
             }
 
+            m_isNeedFlush = 1;
             ::pthread_mutex_unlock(&m_lock);
             return cliIndex;
         }
@@ -368,8 +393,6 @@ namespace LYW_CODE
         int CliUnRegister(int cliIndex)
         {
             CliSubMap_t * cli = NULL;
-
-            int size = 0;
 
             int count = 0;
 
@@ -380,19 +403,16 @@ namespace LYW_CODE
 
             ::pthread_mutex_lock(&m_lock);
 
-            size = sizeof(CliSubMap_t) + sizeof(int) * m_waitFlushMapInfo->msgCount;
+            cli = m_waitFlushMapInfo->cliMap;
 
             if (cliIndex < m_waitFlushMapInfo->cliCount)
             {
-                cli = (CliSubMap_t *)((unsigned char *)(m_waitFlushMapInfo->cliMap) + cliIndex * size);
-
-                cli->st = 0;
+                cli[cliIndex].st = 0;
                 
                 //检测是否需要回收资源
                 for (int iLoop = 16; iLoop <  m_waitFlushMapInfo->cliCount; iLoop++)
                 {
-                    cli = (CliSubMap_t *)((unsigned char *)(m_waitFlushMapInfo->cliMap) + iLoop * size);
-                    if(cli->st == 0)
+                    if(cli[iLoop].st == 0)
                     {
                         count++;
                     }
@@ -410,9 +430,7 @@ namespace LYW_CODE
 
                     tmp.cliCount = m_waitFlushMapInfo->cliCount - (count / 16) * 16;
                     tmp.msgCount = m_waitFlushMapInfo->msgCount;
-                    tmp.cliBitMapSize = tmp.cliCount / 8;
                     tmp.subInfoSize = m_waitFlushMapInfo->subInfoSize;
-
                     mapInfo = ExpandMap(tmp, m_waitFlushMapInfo);
                     
                     ::free(m_waitFlushMapInfo);
@@ -420,6 +438,7 @@ namespace LYW_CODE
                     m_waitFlushMapInfo = mapInfo;
                 }
             }
+            m_isNeedFlush = 1;
 
             ::pthread_mutex_unlock(&m_lock);
 
@@ -436,8 +455,13 @@ namespace LYW_CODE
             int msgSize = 0;
             int msgIndex = -1;
 
+            MapInfo_t tmp = {0};
+
+            MapInfo_t * mapInfo = NULL;
+
+
             SubInfo_t * subInfo = NULL;
-            int subIndex = 0;
+            int subInfoIndex = -1;
 
             if (m_waitFlushMapInfo == NULL)
             {
@@ -446,53 +470,148 @@ namespace LYW_CODE
 
             ::pthread_mutex_lock(&m_lock);
 
-            if (cliIndex > m_waitFlushMapInfo->cliCount)
+            if (cliIndex > m_waitFlushMapInfo->cliCount || m_waitFlushMapInfo->cliMap[cliIndex].st == 0)
             {
                 return -1;
             }
 
-            cliSize = sizeof(CliSubMap_t) + sizeof(int) * m_waitFlushMapInfo->msgCount;
+            cli = m_waitFlushMapInfo->cliMap + cliIndex;
 
-            cli = (CliSubMap_t *)((unsigned char *)(m_waitFlushMapInfo->cliMap) + cliIndex * cliSize);
-
+            msgSize = sizeof(MsgSubMap_t) +  m_waitFlushMapInfo->cliCount * sizeof(SubInfo_t *);
             if (m_waitFlushMsgMap.find(msgID) ==  m_waitFlushMsgMap.end())
             {
                 //消息未登记
-                msgSize = sizeof(MsgSubMap_t) +  m_waitFlushMsgMap->cliBitMapSize;
+
                 for (int iLoop = 0; iLoop < m_waitFlushMapInfo->msgCount; iLoop++)
                 {
                     msg = (MsgSubMap_t *)((unsigned char *)(m_waitFlushMapInfo->msgMap) + iLoop * msgSize);
                     if (msg->st == 0)
                     {
                         msgIndex = iLoop;
-                        m_waitFlushMsgMap[msgID] = iLoop;
-                        msg->st = 1;
-                        msg->msgID = msgID;
-                        SetBit(msg->cliBitMap, cliIndex, 1);
+                        //msg->cliSubInfo[cliIndex] = NULL;
                         break;
                     }
-                }
-
-                if (msgIndex == -1)
-                {
-                    //
-
                 }
             }
             else
             {
                 //消息已经登记 
                 msgIndex = m_waitFlushMsgMap[msgID];
-
+                msg = (MsgSubMap_t *)((unsigned char *)(m_waitFlushMapInfo->msgMap) + msgIndex * msgSize);
+                subInfo = msg->cliSubInfo[cliIndex];
             }
 
+
+            if (subInfo == NULL)
+            {
+                for (int iLoop = 0; iLoop < m_waitFlushMapInfo->subInfoSize; iLoop++)
+                {
+                    if (m_waitFlushMapInfo->subInfo[iLoop].st == 0)
+                    {
+                        subInfo = &(m_waitFlushMapInfo->subInfo[iLoop]);
+                        break;
+                    }
+                }
+            }
+
+            if (msgIndex == -1 || subInfo == NULL)
+            {
+                //扩展mapInfo
+                tmp.cliCount = m_waitFlushMapInfo->cliCount;
+
+                if (msgIndex == -1)
+                {
+                    msgIndex = m_waitFlushMapInfo->msgCount;
+                    tmp.msgCount = m_waitFlushMapInfo->msgCount + 32;
+                }
+                else
+                {
+                    tmp.msgCount = m_waitFlushMapInfo->msgCount;
+                }
+
+                if (subInfo == NULL)
+                {
+                    subInfoIndex = m_waitFlushMapInfo->subInfoSize;
+                    tmp.subInfoSize = m_waitFlushMapInfo->subInfoSize + 128;
+                }
+                else
+                {
+                    tmp.subInfoSize = m_waitFlushMapInfo->subInfoSize;
+                }
+
+
+                mapInfo = ExpandMap(tmp, m_waitFlushMapInfo);
+
+                ::free(m_waitFlushMapInfo);
+
+                m_waitFlushMapInfo = mapInfo;
+
+                if (subInfo == NULL)
+                {
+                    subInfo = &(m_waitFlushMapInfo->subInfo[subInfoIndex]);
+                }
+            }
+
+            msg = (MsgSubMap_t *)((unsigned char *)(m_waitFlushMapInfo->msgMap) + msgIndex * msgSize);
+            m_waitFlushMsgMap[msgID] = msgIndex;
+            msg->st = 1;
+            msg->msgID = msgID;
+
+            msg->cliSubInfo[cliIndex] = subInfo;
+
+            msg->cliSubInfo[cliIndex]->st = 1;
+            msg->cliSubInfo[cliIndex]->userParam = userParam;
+            msg->cliSubInfo[cliIndex]->handleCB = handleCB;
+            msg->cliSubInfo[cliIndex]->errorCB = ErrorCB;
+            m_isNeedFlush = 1;
             ::pthread_mutex_unlock(&m_lock);
             return 0;
         }
 
-        int MsgUnRegister()
+        int MsgUnRegister(int cliIndex, int msgID)
         {
+
+            MsgSubMap_t * msg = NULL;
+
+            int msgIndex = 0;
+
+            if (m_waitFlushMapInfo == NULL)
+            {
+                return -1;
+            }
+
             ::pthread_mutex_lock(&m_lock);
+            m_isNeedFlush = 1;
+
+            if (cliIndex >= m_waitFlushMapInfo->cliCount || msgIndex >= m_waitFlushMapInfo->msgCount || m_waitFlushMsgMap.find(msgID) ==  m_waitFlushMsgMap.end())
+            {
+                ::pthread_mutex_unlock(&m_lock);
+                return -1;
+            }
+
+            msgIndex = m_waitFlushMsgMap[msgID];
+
+            msg = (MsgSubMap_t *)((unsigned char *)(m_waitFlushMapInfo->msgMap) +  (sizeof(MsgSubMap_t) + sizeof(SubInfo_t *) * m_waitFlushMapInfo->cliCount) * msgIndex);
+
+            if (msg->cliSubInfo[cliIndex] != NULL)
+            {
+                msg->cliSubInfo[cliIndex]->st = 0;
+                msg->cliSubInfo[cliIndex] = NULL;
+            }
+
+            for (int iLoop = 0; iLoop < m_waitFlushMapInfo->cliCount; iLoop++)
+            {
+                if (msg->cliSubInfo[iLoop] != NULL)
+                {
+                    ::pthread_mutex_unlock(&m_lock);
+                    return 0;
+                }
+
+            }
+            
+            //没有客户端订阅该消息 清理掉
+            m_waitFlushMsgMap.erase(msg->msgID);
+            msg->st = 0;
 
             ::pthread_mutex_unlock(&m_lock);
             return 0;
@@ -503,6 +622,7 @@ namespace LYW_CODE
             ::pthread_mutex_lock(&m_lock1);
 
             ::pthread_mutex_lock(&m_lock);
+            m_isNeedFlush = 0;
             m_newMapInfo = m_waitFlushMapInfo;
             m_newMsgMap = m_waitFlushMsgMap;
 
@@ -510,8 +630,10 @@ namespace LYW_CODE
             ::memcpy(m_waitFlushMapInfo, m_mapInfo, m_newMapInfo->totalSize);
 
             m_waitFlushMapInfo->cliMap = (CliSubMap_t *)((unsigned char *)m_waitFlushMapInfo + sizeof(MapInfo_t));
-            m_waitFlushMapInfo->msgMap = (MsgSubMap_t *)((unsigned char *)m_waitFlushMapInfo + sizeof(MapInfo_t) + (sizeof(CliSubMap_t) + (sizeof(int) * m_waitFlushMapInfo->msgCount)) * m_waitFlushMapInfo->cliCount);
-            m_waitFlushMapInfo->subInfo = (SubInfo_t *)((unsigned char *)m_waitFlushMapInfo + sizeof(MapInfo_t) + (sizeof(CliSubMap_t) + (sizeof(int) * m_waitFlushMapInfo->msgCount)) * m_waitFlushMapInfo->cliCount  + (sizeof(MsgSubMap_t) + m_waitFlushMapInfo->cliBitMapSize) * m_waitFlushMapInfo->msgCount);
+
+            m_waitFlushMapInfo->msgMap = (MsgSubMap_t *)((unsigned char *)m_waitFlushMapInfo + sizeof(MapInfo_t) + sizeof(CliSubMap_t) * m_waitFlushMapInfo->cliCount);
+
+            m_waitFlushMapInfo->subInfo = (SubInfo_t *)((unsigned char *)m_waitFlushMapInfo + sizeof(MapInfo_t) + sizeof(CliSubMap_t) * m_waitFlushMapInfo->cliCount  + (sizeof(MsgSubMap_t) + m_waitFlushMapInfo->cliCount * sizeof(MsgSubMap_t)) * m_waitFlushMapInfo->msgCount);
 
             ::pthread_mutex_unlock(&m_lock);
 
@@ -525,22 +647,162 @@ namespace LYW_CODE
             {
                 ::free(tmp);
             }
+
             ::pthread_mutex_unlock(&m_lock1);
         }
 
-        int QuerySubInfo(int msgIndex, int cliIndex, SubInfo_t *  SubInfo)
+
+        int QuerySubInfo(int cliIndex, int msgIndex, SubInfo_t * subInfo)
         {
-            return 0;
+            int st = 0;
+            
+            MapInfo_t * mapInfo = NULL;
+
+            MsgSubMap_t * msg = NULL;
+
+            st = m_rwLock.ReadLock();
+
+            if (st == 0)
+            {
+                if (m_mapInfo == NULL)
+                {
+                    m_rwLock.ReadUnLock(st);
+                    return -1;
+                }
+
+                mapInfo = m_mapInfo;
+            }
+            else
+            {
+                if (m_newMapInfo == NULL)
+                {
+                    m_rwLock.ReadUnLock(st);
+                    return -1;
+                }
+
+                mapInfo = m_newMapInfo;
+            }
+            
+            if (cliIndex >= mapInfo->cliCount || msgIndex >= mapInfo->msgCount)
+            {
+                m_rwLock.ReadUnLock(st);
+                return -1;
+            }
+
+            msg = (MsgSubMap_t *)((unsigned char *)mapInfo->msgMap + (sizeof(MsgSubMap_t) + sizeof(SubInfo_t *) * mapInfo->cliCount) * msgIndex);
+                        
+            if (mapInfo->cliMap[cliIndex].st == 0 || msg->st == 0 || msg->cliSubInfo[cliIndex] == NULL)
+            {
+                m_rwLock.ReadUnLock(st);
+                return -2;
+            }
+            
+            if (subInfo != NULL)
+            {
+                subInfo->st = msg->cliSubInfo[cliIndex]->st ;
+                subInfo->userParam = msg->cliSubInfo[cliIndex]->userParam;
+                subInfo->handleCB= msg->cliSubInfo[cliIndex]->handleCB;
+                subInfo->errorCB= msg->cliSubInfo[cliIndex]->errorCB;
+            }
+            m_rwLock.ReadUnLock(st);
+
+            return msgIndex;
         }
 
-        int QueryCliSubMap(int msgIndex, void * bitMap, unsigned int sizeOfMap)
+
+
+        int QueryMsgIsSub(int cliIndex, int msgID)
         {
-            return 0;
+            int st = 0;
+            
+            MapInfo_t * mapInfo = NULL;
+
+            MsgSubMap_t * msg = NULL;
+
+            int msgIndex = 0;
+
+            st = m_rwLock.ReadLock();
+
+            if (st == 0)
+            {
+                if (m_mapInfo == NULL)
+                {
+                    m_rwLock.ReadUnLock(st);
+                    return -1;
+                }
+
+ 
+                //无写等待 使用 m_mapInfo
+                mapInfo = m_mapInfo;
+                if (m_msgMap.find(msgID) == m_msgMap.end())
+                {
+                    m_rwLock.ReadUnLock(st);
+                    return -1;
+                }
+
+                msgIndex = m_msgMap[msgID];
+            }
+            else
+            {
+                if (m_newMapInfo == NULL)
+                {
+                    m_rwLock.ReadUnLock(st);
+                    return -1;
+                }
+
+                //有写等待 使用 m_newMapInfo
+                mapInfo = m_newMapInfo;
+                if (m_newMsgMap.find(msgID) == m_newMsgMap.end())
+                {
+                    m_rwLock.ReadUnLock(st);
+                    return -1;
+                }
+                msgIndex = m_newMsgMap[msgID];
+            }
+            
+            if (cliIndex >= mapInfo->cliCount || msgIndex >= mapInfo->msgCount)
+            {
+                m_rwLock.ReadUnLock(st);
+                return -1;
+            }
+
+            msg = (MsgSubMap_t *)((unsigned char *)mapInfo->msgMap + (sizeof(MsgSubMap_t) + sizeof(SubInfo_t *) * mapInfo->cliCount) * msgIndex);
+                        
+            if (mapInfo->cliMap[cliIndex].st == 0 || msg->st == 0 || msg->cliSubInfo[cliIndex] == NULL)
+            {
+                m_rwLock.ReadUnLock(st);
+                return -2;
+            }
+            
+            m_rwLock.ReadUnLock(st);
+
+            return msgIndex;
         }
 
-        bool CheckBitMap(void * bitMap, unsigned int lenOfMap, int checkIndex)
+        int CliCount()
         {
-            return false;
+            int st = 0;
+            int cliCount = 0;
+            if (m_mapInfo == NULL)
+            {
+                return -1;
+            }
+
+            st = m_rwLock.ReadLock();
+
+            if (st == 0)
+            {
+                //无写等待 使用 m_mapInfo
+                cliCount = m_mapInfo->cliCount;
+            }
+            else
+            {
+                //有写等待 使用 m_newMapInfo
+                cliCount = m_newMapInfo->cliCount;
+            }
+            m_rwLock.ReadUnLock(st);
+
+            return cliCount;
         }
 
 
@@ -556,7 +818,6 @@ namespace LYW_CODE
             printf("totalSize   [%d]\n", m_mapInfo->totalSize);
             printf("cliCount    [%d]\n", m_mapInfo->cliCount);
             printf("msgCount    [%d]\n", m_mapInfo->msgCount);
-            printf("bitMapSize  [%d]\n", m_mapInfo->cliBitMapSize);
             printf("subInfoSize [%d]\n", m_mapInfo->subInfoSize);
             printf("mapInfo     [%p]\n", m_mapInfo);
             printf("cliMap      [%p]\n", m_mapInfo->cliMap);
@@ -569,42 +830,34 @@ namespace LYW_CODE
             size = sizeof(CliSubMap_t) + sizeof(int) * m_mapInfo->msgCount;
             for (int iLoop = 0; iLoop < m_mapInfo->cliCount; iLoop++)
             {
-                CliSubMap_t * cli = (CliSubMap_t *)((unsigned char *)m_mapInfo->cliMap + size * iLoop);
-                printf("%03d ST %d IndexMap[", iLoop, cli->st);
-                for (int index = 0; index < m_mapInfo->msgCount; index++)
-                {
-                    printf("%03d:%d ", index, cli->subInfoIndex[index]);
-                }
-                printf("]\n");
+                CliSubMap_t * cli = m_mapInfo->cliMap + iLoop;
+                printf("%03d ST %d\n", iLoop, cli->st);
             }
 
             printf("\n*************MSG_Map******************\n");
 
-            size = sizeof(MsgSubMap_t) + m_mapInfo->cliBitMapSize;
+            size = sizeof(MsgSubMap_t) + m_mapInfo->cliCount * sizeof(SubInfo_t *);
             for (int iLoop = 0; iLoop < m_mapInfo->msgCount; iLoop++)
             {
                 MsgSubMap_t * cli = (MsgSubMap_t *)((unsigned char *)m_mapInfo->msgMap + size * iLoop);
-                printf("%03d ST %d CliBitMap[", iLoop, cli->st);
-                for (int index = 0; index < m_mapInfo->cliBitMapSize; index++)
+                printf("%03d ST %d MsgID %d CliSubInfo::\n", iLoop, cli->st, cli->msgID);
+                for (int index = 0; index < m_mapInfo->cliCount; index++)
                 {
-                    printf("%02X ",cli->cliBitMap[index]);
+                    printf("        cliIndx %03d  ADDR[%p] ", index, cli->cliSubInfo[index]);
+                    if (cli->cliSubInfo[index] != NULL)
+                    {
+                        bool b1;
+                        bool b2;
+                        
+                        b1 = (cli->cliSubInfo[index]->handleCB != NULL);
+                        b2 = (cli->cliSubInfo[index]->errorCB != NULL);
+                        printf("ST %d UserParam %p HandleCB[%d] ErrCB[%d]\n", cli->cliSubInfo[index]->st, cli->cliSubInfo[index]->userParam,  b1, b2);
+                    }
+                    else
+                    {
+                        printf("\n");
+                    }
                 }
-                printf("]\n");
-            }
-
-            printf("\n*************SUB_Map******************\n");
-            for (int iLoop = 0; iLoop < m_mapInfo->subInfoSize; iLoop++)
-            {
-                SubInfo_t * cli = m_mapInfo->subInfo;
-                bool b1;
-                bool b2;
-                
-                b1 = (cli[iLoop].handleCB != NULL);
-
-                b2 = (cli[iLoop].errorCB != NULL);
-
-                printf("%03d ST %d UserParam %p HandleCB[%d] ErrCB[%d]\n",iLoop, cli[iLoop].st, cli[iLoop].userParam, b1, b2);
-
             }
         }
     };

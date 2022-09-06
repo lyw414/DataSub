@@ -56,7 +56,7 @@ namespace LYW_CODE
             }
             else
             {
-                return m_func.stFunc(args1);
+                return m_func.stFunc(args1, args2);
             }
         }
         
