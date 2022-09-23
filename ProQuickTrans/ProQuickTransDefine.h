@@ -9,8 +9,5 @@ namespace RM_CODE
         //0 顺序读 1 最旧值 2 最新值
         xint32_t mode; 
     } ProQuickTransNodeIndex_t;
-
-
-
 }
 #endif

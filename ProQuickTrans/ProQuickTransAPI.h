@@ -6,7 +6,7 @@
 #include <map>
 
 #include "type.h"
-#include "commDef.h"
+#include "ProQuickTransDefine.h"
 
 #define PRO_QUICK_TRANS_DEFINE_BEGIN() static const xint32_t g_proQuickTransCFG[] = {
 #define PRO_QUICK_TRANS_DEFINE_DEFINE(key, ID, BlockCount, BlockSize) \

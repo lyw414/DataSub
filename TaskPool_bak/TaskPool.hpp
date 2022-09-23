@@ -100,8 +100,6 @@ namespace RM_CODE
             Task_t * task;
         } MonThreadParam_t;
 
-
-
     private:
         //注册任务
         std::map<xuint32_t, Task_t *> m_unRegisterTask; //管理线程清理

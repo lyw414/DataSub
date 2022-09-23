@@ -2,7 +2,7 @@
 #define __RM_CBB_API_PRO_QUICK_TRANS_FILE_HPP__
 
 #include "type.h"
-#include "commDef.h"
+#include "ProQuickTransDefine.h"
 
 #include <sys/types.h>
 #include <sys/ipc.h>
