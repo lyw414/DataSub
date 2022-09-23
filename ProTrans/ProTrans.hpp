@@ -390,14 +390,14 @@ namespace LYW_CODE
                 next = NextIndex(index, typeTable->nodeInfo.size);
                 next_next = NextIndex(next, typeTable->nodeInfo.size);
 
-                tmp_rb = typeTable->nodeInfo.r_B;
-                tmp_re = typeTable->nodeInfo.r_E;
-                tmp_wb = typeTable->nodeInfo.w_B;
+                //tmp_rb = typeTable->nodeInfo.r_B;
+                //tmp_re = typeTable->nodeInfo.r_E;
+                //tmp_wb = typeTable->nodeInfo.w_B;
 
                 if(next == typeTable->nodeInfo.r_B && next_next == typeTable->nodeInfo.r_E)
                 {
                     //写节点已满
-                    m_wwwCount++;
+                    //m_wwwCount++;
                     ::pthread_mutex_unlock(&typeTable->lock);
                     ::usleep(0);
                     continue;
