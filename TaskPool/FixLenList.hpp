@@ -126,7 +126,7 @@ namespace RM_CODE
 
 
     public:
-        FixLenList(xuint32_t maxSize)
+        FixLenList()
         {
             m_begin = NULL;
 
@@ -134,7 +134,7 @@ namespace RM_CODE
 
             m_free = NULL;
 
-            m_maxSize = maxSize;
+            m_maxSize = 0;
 
             m_size = 0;
 
@@ -145,11 +145,10 @@ namespace RM_CODE
         xint32_t Reset(xuint32_t maxSize)
         {
             UnInit();
-            m_maxSize = maxSize;
-            Init();
+            Init(maxSize);
         }
 
-        xint32_t Init()
+        xint32_t Init(xuint32_t maxSize)
         {
             if (m_init == 1)
             {
@@ -161,6 +160,8 @@ namespace RM_CODE
             ListNode_t * ptr;
 
             ListNode_t * current;
+
+            m_maxSize = maxSize;
 
             for (int iLoop = 0; iLoop < m_maxSize; iLoop++)
             {

@@ -173,7 +173,7 @@ namespace RM_CODE
             ::pthread_attr_init(&attr); 
             ::pthread_attr_setdetachstate(&attr,PTHREAD_CREATE_DETACHED);
 
-            ::pthread_create(&handle, NULL, enter, pThreadParam);
+            ::pthread_create(&handle, &attr, enter, pThreadParam);
 
             return 0;
         }
