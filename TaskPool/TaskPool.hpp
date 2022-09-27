@@ -7,6 +7,8 @@
 #include <list>
 #include <unistd.h>
 
+#include <stdio.h>
+
 #include "SimpleFunction.hpp"
 #include "TaskPoolDefine.h"
 #include "FixLenList.hpp"
@@ -66,38 +68,13 @@ namespace RM_CODE
     private:
         struct _TaskNode;
 
-        typedef struct _TaskAttrTimeConc {
+        typedef struct _TaskAttr {
             xuint32_t interval;
             xuint32_t timeout;
-            xint32_t leftTime;
-        } TaskAttrTimeConc_t;
-
-        typedef struct _TaskAttrTimeSer {
-            xuint32_t interval;
-            xuint32_t timeout;
-            xint32_t leftTime;
             xuint32_t maxWaitTaskCount;
             xuint32_t waitCount;
             FixLenList<struct _TaskNode *> * waitTaskNode;
-        } TaskAttrTimeSer_t;
-
-        typedef struct _TaskAttrSer {
-            xint32_t timeout;
-            xuint32_t maxWaitTaskCount;
-            xuint32_t waitCount;
-            FixLenList<struct _TaskNode *> * waitTaskNode;
-        } TaskAttrSer_t;
-
-        typedef struct _TaskAttrConc {
-            xuint32_t timeout;
-        } TaskAttrConc_t;
-
-        typedef struct _TaskAttrMon {
-        } TaskAttrMon_t;
-
-        typedef struct _TaskAttrOnce {
-            xuint32_t timeout;
-        } TaskAttrOnce_t;
+        } TaskAttr_t;
 
         typedef struct _TaskResource {
             xint32_t taskResourceID;                //任务资源ID
@@ -106,17 +83,14 @@ namespace RM_CODE
             void * userParam;                       //用户参数指针
             TaskResourceType_e taskResourceType;    //任务资源类型
             TaskResourceST_e taskResourceST;        //任务资源状态
-            
-            //与TaskResourceType_e绑定
-            union {                                 
-                TaskAttrTimeConc_t timeConc;
-                TaskAttrTimeSer_t timeSer;
-                TaskAttrConc_t conc;
-                TaskAttrSer_t ser;
-                TaskAttrMon_t mon;
-                TaskAttrOnce_t once;
-            } attr;
+
+            TaskAttr_t attr;
         } TaskResource_t;
+
+        typedef struct _TimeTask {
+            xint32_t leftTime;
+            TaskResource_t * taskResource;
+        } TimeTask_t;
 
         typedef struct _TaskNode {
             TaskResource_t * taskResource;
@@ -128,6 +102,7 @@ namespace RM_CODE
             FixLenList<struct _TaskNode *>::ListNode_t * taskQueueListNode;       //用于在m_taskQueue中快速移除任务节点
             FixLenList<struct _TaskNode *>::ListNode_t * waitQueueListNode;       //用于在TaskResource_t::attr::waitQueue 中快速移除任务节点
         } TaskNode_t;
+
 
         typedef struct _ThreadInfo {
             pthread_t handle;           //线程句柄
@@ -151,6 +126,7 @@ namespace RM_CODE
         //任务资源
         std::map<xint32_t, TaskResource_t *> m_taskResource;
         std::map<xint32_t, TaskResource_t *> m_waitFreeTaskResource;
+        xuint32_t  m_waitFreeTaskResourceVer;
 
         std::map<xint32_t, TaskResource_t *> m_timeTaskResource;
         xuint32_t m_timeTaskResourceVer;
@@ -194,9 +170,29 @@ namespace RM_CODE
         }
 
 
-        xint32_t CheckAndUploadTimeTaskResource(xuint32_t & ver, std::vector<TaskResource_t *> & taskResource)
+        xint32_t CheckAndUploadFreeTaskResource(xuint32_t & ver, std::list<TaskResource_t *> & freeTaskResource)
         {
-            std::vector<TaskResource_t *> tmp;
+            std::map<xint32_t, TaskResource_t *>::iterator it;
+            
+            if (ver != m_waitFreeTaskResourceVer)
+            {
+                ::pthread_mutex_lock(&m_lock);
+                ver = m_waitFreeTaskResourceVer;
+                for (it = m_waitFreeTaskResource.begin(); it != m_waitFreeTaskResource.end(); it++)
+                {
+                    freeTaskResource.push_back(it->second);
+                }
+                m_waitFreeTaskResource.clear();
+                ::pthread_mutex_unlock(&m_lock);
+            }
+        }
+
+
+
+        xint32_t CheckAndUploadTimeTaskResource(xuint32_t & ver, std::vector<TimeTask_t> & taskResource)
+        {
+            TimeTask_t timeTask = {0};
+            std::vector<TimeTask_t> tmp;
             std::map<xint32_t, TaskResource_t *> timeResourceMap;
             std::map<xint32_t, TaskResource_t *>::iterator it;
             if (ver != m_timeTaskResourceVer)
@@ -208,17 +204,23 @@ namespace RM_CODE
                 
                 for (xint32_t iLoop = 0; iLoop < taskResource.size(); iLoop++)
                 {
-                    if (timeResourceMap.find(taskResource[iLoop]->taskResourceID) != timeResourceMap.end())
+                    if (timeResourceMap.find(taskResource[iLoop].taskResource->taskResourceID) != timeResourceMap.end())
                     {
+                        //update
+                        taskResource[iLoop].taskResource = timeResourceMap[taskResource[iLoop].taskResource->taskResourceID];
                         tmp.push_back(taskResource[iLoop]);
-                        timeResourceMap.erase(taskResource[iLoop]->taskResourceID);
+                        timeResourceMap.erase(taskResource[iLoop].taskResource->taskResourceID);
                     }
                 }
 
                 for (it = timeResourceMap.begin(); it !=  timeResourceMap.end(); it++)
                 {
-                    tmp.push_back(it->second);
+                    timeTask.leftTime = 0;
+                    timeTask.taskResource = it->second;
+                    tmp.push_back(timeTask);
                 }
+
+                taskResource = tmp;
 
                 return 1;
             }
@@ -326,7 +328,7 @@ namespace RM_CODE
 
         void TimeThreadRun(ThreadInfo_t * threadInfo)
         {
-            std::vector<TaskResource_t *> taskResource;
+            std::vector<TimeTask_t> timeTask;
             xuint32_t ver;
             xint32_t interval = 10000;
 
@@ -334,31 +336,18 @@ namespace RM_CODE
 
             while (threadInfo->threadST == THREAD_ST_RUN)
             {
-                CheckAndUploadTimeTaskResource(ver, taskResource);
-                for(xint32_t iLoop = 0; iLoop < taskResource.size(); iLoop++)
+                CheckAndUploadTimeTaskResource(ver, timeTask);
+                for(xint32_t iLoop = 0; iLoop < timeTask.size(); iLoop++)
                 {
-                    switch(taskResource[iLoop]->taskResourceType)
+                    timeTask[iLoop].leftTime -= (interval / 1000 + 1);
+                    if (timeTask[iLoop].leftTime <= 0)
                     {
-                    case TASK_RESOURCE_TYPE_TIME_SER:
-                        taskResource[iLoop]->attr.timeSer.leftTime -= interval;
-                        if (taskResource[iLoop]->attr.timeSer.leftTime <= 0)
-                        {
-                            taskResource[iLoop]->attr.timeSer.leftTime = taskResource[iLoop]->attr.timeSer.interval;
-                            AsyncHandleTask(taskResource[iLoop]->taskResourceID);
-                        }
-                        break;
-                    case TASK_RESOURCE_TYPE_TIME_CONC:
-                        taskResource[iLoop]->attr.timeConc.leftTime -= interval;
-                        if (taskResource[iLoop]->attr.timeConc.leftTime <= 0)
-                        {
-                            taskResource[iLoop]->attr.timeConc.leftTime = taskResource[iLoop]->attr.timeConc.interval;
-                            AsyncHandleTask(taskResource[iLoop]->taskResourceID);
-                        }
-
-                        break;
+                        timeTask[iLoop].leftTime = timeTask[iLoop].taskResource->attr.interval;
+                        AsyncExecTask(timeTask[iLoop].taskResource, NULL, 0);
+                        //printf("ssss %d\n", timeTask[iLoop].taskResource->attr.interval);
                     }
                 }
-                usleep(interval);
+                ::usleep(interval);
             }
 
             threadInfo->threadST = THREAD_ST_FINISHED;
@@ -374,15 +363,46 @@ namespace RM_CODE
 
         void MngThreadRun(ThreadInfo_t * threadInfo)
         {
+            std::list<TaskResource_t *> freeTaskResource;
+            xuint32_t freeTaskResourceVer = m_waitFreeTaskResourceVer - 100;
+
+            std::vector<ThreadInfo_t *> thread; 
+            xuint32_t threadInfoVer = m_threadInfoVer - 100;
+
+            std::list<TaskResource_t *>::iterator it;
             while(threadInfo->threadST == THREAD_ST_RUN)
             {
-                sleep(1);
-                //检测任务是否存在超时 等待状态的任务会直接移除并触发异常回调 
                 //检测注销任务资源 确认无任务执行后释放资源
+                CheckAndUploadFreeTaskResource(freeTaskResourceVer, freeTaskResource);
+                for (it = freeTaskResource.begin(); it != freeTaskResource.end();) 
+                {
+                    if ((*it)->attr.waitTaskNode == 0)
+                    {
+                        if ((*it)->attr.waitTaskNode != NULL) 
+                        {
+                            (*it)->attr.waitTaskNode->UnInit();
+                            delete (*it)->attr.waitTaskNode;
+                        }
+                        delete *it;
+                        it = freeTaskResource.erase(it);
+                    }
+                    else
+                    {
+                        it++;
+                    }
+                }
 
+                //检测线程超时
+
+
+                //检测任务是否存在超时 等待状态的任务会直接移除并触发异常回调 
+                //TODO 暂时不实现 
+                ::sleep(1);
             }
 
-            //管理线程一定是最后结束
+            //终止所有线程
+
+
         }
 
         static void * MonThreadEnter(void *ptr)
@@ -420,13 +440,52 @@ namespace RM_CODE
 
         void WorkThreadRun(ThreadInfo_t * threadInfo)
         {
+            TaskNode_t * taskNode = NULL;
+            TaskNode_t * tmp = NULL;
+            struct timespec wakeTime;
             while(threadInfo->threadST == THREAD_ST_RUN)
             {
-                sleep(1);
+                taskNode = NULL;
+                if (!m_taskQueue.Empty())
+                {
+                    ::pthread_mutex_lock(&m_taskLock);
+                    if (!m_taskQueue.Empty())
+                    {
+                        m_taskQueue.Front(taskNode);
+                        m_taskQueue.Pop_front();
+                        taskNode->taskST = TASK_ST_DOING;
+                        taskNode->taskResource->taskResourceST = TASK_RESOURCE_ST_OCCUPY;
+                    }
+                    ::pthread_mutex_unlock(&m_taskLock);
+                }
+
+                if (taskNode == NULL)
+                {
+                    ::clock_gettime(CLOCK_MONOTONIC, &wakeTime);
+                    wakeTime.tv_sec += 2;
+                    ::pthread_mutex_lock(&m_taskStartCondLock);
+                    ::pthread_cond_timedwait(&m_taskStartCond, &m_taskStartCondLock, &wakeTime);
+                    ::pthread_mutex_unlock(&m_taskStartCondLock);
+                }
+                else
+                {
+                    taskNode->taskResource->handleFunc(taskNode->param, taskNode->lenOfParam, taskNode->taskResource->userParam);
+                    taskNode->taskResource->taskResourceST = TASK_RESOURCE_ST_FREE;
+                    taskNode->taskST = TASK_ST_FINISHED;
+                    ::pthread_mutex_lock(&m_taskLock);
+                    taskNode->taskResource->attr.waitCount--;
+                    m_freeQueue.Push_back(taskNode);
+
+                    if (taskNode->taskResource->attr.waitTaskNode != NULL && !(taskNode->taskResource->attr.waitTaskNode->Empty()))
+                    {
+                        taskNode->taskResource->attr.waitTaskNode->Front(tmp);
+                        taskNode->taskResource->attr.waitTaskNode->Pop_front();
+                        m_taskQueue.Push_back(tmp);
+                    }
+                    ::pthread_mutex_unlock(&m_taskLock);
+                }
             }
         }
-
-
 
     public:
         TaskPool()
@@ -449,6 +508,7 @@ namespace RM_CODE
 
             m_timeTaskResourceVer = 0;
             m_threadInfoVer = 0;
+            m_waitFreeTaskResourceVer = 0;
 
             m_taskPoolST = TASK_POOL_ST_STOPPED;
 
@@ -506,10 +566,17 @@ namespace RM_CODE
 
         void UnInit()
         {
+
+
         }
 
-        xint32_t RegisterNormalTask(CallBack handleFunc, void * userParam, CallBack errFunc = NULL, bool IsSer = true, xuint32_t maxWaitTaskCount = 5, xint32_t timeout = 0)
+        void * RegisterNormalTask(CallBack handleFunc, void * userParam, CallBack errFunc = NULL, bool IsSer = true, xuint32_t maxWaitTaskCount = 5, xint32_t timeout = 0)
         {
+            if (m_taskPoolST != TASK_POOL_ST_START)
+            {
+                return NULL;
+            }
+
             TaskResource_t * taskResource = new TaskResource_t;
 
             xint32_t  resourceID = 0;
@@ -517,39 +584,47 @@ namespace RM_CODE
             resourceID = GenTaskResourceID();
             m_taskResource[resourceID] = taskResource;
 
-            taskResouorce->taskResourceID = resourceID;
-            taskResouorce->handleFunc = handleFunc;
-            taskResouorce->errFunc = errFunc;
-            taskResouorce->userParam = userParam;
-            taskResouorce->taskResourceST = TASK_RESOURCE_ST_FREE;
+            taskResource->taskResourceID = resourceID;
+            taskResource->handleFunc = handleFunc;
+            taskResource->errFunc = errFunc;
+            taskResource->userParam = userParam;
+            taskResource->taskResourceST = TASK_RESOURCE_ST_FREE;
 
             if (IsSer)
             {
                 taskResource->taskResourceType = TASK_RESOURCE_TYPE_SER;
-                taskResource->attr.ser.timeout = timeout;
-                taskResource->attr.ser.maxWaitTaskCount = maxWaitTaskCount;
-                taskResource->attr.ser.waitCount = 0;
-                taskResource->attr.ser.waitTaskNode = new FixLenList<struct _TaskNode *>;
+                taskResource->attr.timeout = timeout;
+                taskResource->attr.maxWaitTaskCount = maxWaitTaskCount + 1;
+                taskResource->attr.waitCount = 0;
+                taskResource->attr.waitTaskNode = new FixLenList<struct _TaskNode *>;
 
-                taskResource->attr.ser.waitTaskNode->Init(maxWaitTaskCount);
+                taskResource->attr.waitTaskNode->Init(maxWaitTaskCount);
 
             }
             else
             {
-                m_taskResource->taskResourceType = TASK_RESOURCE_TYPE_CONC;
-                m_taskResource->attr.conc.timeout = timeout;
+                taskResource->taskResourceType = TASK_RESOURCE_TYPE_CONC;
+                taskResource->attr.timeout = timeout;
+                taskResource->attr.maxWaitTaskCount = 0;
+                taskResource->attr.waitCount = 0;
+                taskResource->attr.waitTaskNode = NULL;
             }
             ::pthread_mutex_unlock(&m_lock);
-            return handle;
+            return taskResource;
         }
 
-        xint32_t RegisterTimeTask(CallBack handleFunc, void * userParam, xuint32_t interval, CallBack errFunc = NULL, bool IsSer = true, xuint32_t maxWaitTaskCount = 5, xint32_t timeout = 0)
+        void * RegisterTimeTask(CallBack handleFunc, void * userParam, xuint32_t interval, CallBack errFunc = NULL, bool IsSer = true, xuint32_t maxWaitTaskCount = 5, xint32_t timeout = 0)
         {
+            if (m_taskPoolST != TASK_POOL_ST_START)
+            {
+                return NULL;
+            }
+
             TaskResource_t * taskResource = new TaskResource_t;
 
             xint32_t resourceID = 0;
             ::pthread_mutex_lock(&m_lock);
-
+            m_timeTaskResourceVer++;
             resourceID = GenTaskResourceID();
             m_taskResource[resourceID] = taskResource;
 
@@ -562,31 +637,36 @@ namespace RM_CODE
             if (IsSer)
             {
                 taskResource->taskResourceType = TASK_RESOURCE_TYPE_TIME_SER;
-                taskResource->attr.timeSer.timeout = timeout;
+                taskResource->attr.timeout = timeout;
+                taskResource->attr.interval = interval;
+                taskResource->attr.maxWaitTaskCount = maxWaitTaskCount + 1;
+                taskResource->attr.waitCount = 0;
+                taskResource->attr.waitTaskNode = new FixLenList<struct _TaskNode *>;
 
-                taskResource->attr.timeSer.interval = interval;
-                taskResource->attr.timeSer.leftTime = 0;
-                taskResource->attr.timeSer.maxWaitTaskCount = maxWaitTaskCount;
-                taskResource->attr.timeSer.waitCount = 0;
-                taskResource->attr.timeSer.waitTaskNode = new FixLenList<struct _TaskNode *>;
-
-                taskResource->attr.timeSer.waitTaskNode->Init(maxWaitTaskCount);
-
+                taskResource->attr.waitTaskNode->Init(maxWaitTaskCount);
             }
             else
             {
                 taskResource->taskResourceType = TASK_RESOURCE_TYPE_TIME_CONC;
-                taskResource->attr.timeConc.timeout = timeout;
-                taskResource->attr.timeSer.interval = interval;
-                taskResource->attr.timeSer.leftTime = 0;
+                taskResource->attr.timeout = timeout;
+                taskResource->attr.interval = interval;
+                taskResource->attr.maxWaitTaskCount = 0;
+                taskResource->attr.waitCount = 0;
+                taskResource->attr.waitTaskNode = NULL;
+
             }
             m_timeTaskResource[resourceID] = taskResource;
             ::pthread_mutex_unlock(&m_lock);
-            return handle;
+            return taskResource;
         }
 
-        xint32_t RegisterMonTask(CallBack handleFunc, void * userParam, CallBack errFunc = NULL)
+        void * RegisterMonTask(CallBack handleFunc, void * userParam, CallBack errFunc = NULL)
         {
+            if (m_taskPoolST != TASK_POOL_ST_START)
+            {
+                return NULL;
+            }
+
             TaskResource_t * taskResource = new TaskResource_t;
             xint32_t  resourceID = 0;
             ::pthread_mutex_lock(&m_lock);
@@ -599,15 +679,25 @@ namespace RM_CODE
             taskResource->userParam = userParam;
             taskResource->taskResourceST = TASK_RESOURCE_ST_FREE;
             taskResource->taskResourceType = TASK_RESOURCE_TYPE_MON;
-            monTaskResource[resourceID] = taskResource;
+            taskResource->attr.interval = 0;
+            taskResource->attr.maxWaitTaskCount = 0;
+            taskResource->attr.waitCount = 0;
+            taskResource->attr.waitTaskNode = NULL;
+
+            m_monTaskResource[resourceID] = taskResource;
             ::pthread_mutex_unlock(&m_lock);
-            //m_taskResource[handle]->attr
-            return 0;
+
+            return taskResource;
         }
 
         xint32_t UnRegisterTask(void * taskHandle)
         {
             TaskResource_t * taskResource = (TaskResource_t *)taskHandle;
+            if (m_taskPoolST != TASK_POOL_ST_START)
+            {
+                return -1;
+            }
+
             if (taskResource == NULL)
             {
                 return -1;
@@ -624,32 +714,120 @@ namespace RM_CODE
             return 0;
         }
 
-        xint32_t AsyncHandleTask(xint32_t handle, void * param, xint32_t lenOfParam)
+        xint32_t AsyncExecTask(void * handle, void * param, xint32_t lenOfParam, xuint32_t * taskID = NULL)
         {
-            TaskResource_t * taskResource = (TaskResource_t *)handel;
+            TaskResource_t * taskResource = (TaskResource_t *)handle;
             TaskNode_t * taskNode = NULL;
 
             xint32_t timeout = 0;
+
+            xint32_t isBlock = 0;
+
+            xint32_t interval = 10000;
+
+            if (m_taskPoolST != TASK_POOL_ST_START)
+            {
+                return -1;
+            }
+
 
             if (taskResource == NULL)
             {
                 return -1;
             }
 
-            timeout = taskResource
-            ::pthread_mutex_lock(m_taskLock);
-            while(!m_freeQueue.Empty())
-            {
+            timeout = taskResource->attr.timeout;
 
+            if (timeout <= 0)
+            {
+                isBlock = 1;
             }
-            ::pthread_mutex_unlock(m_taskLock);
-            return 0;
+
+
+            while(true)
+            {
+                if (m_freeQueue.Empty())
+                {
+                    ::usleep(interval);
+                    if (isBlock != 1)
+                    {
+                        timeout -= interval;
+                        if (timeout <= 0)
+                        {
+                            return -1;
+                        }
+                    }
+                    continue;
+                }
+
+                ::pthread_mutex_lock(&m_taskLock);
+                if (m_freeQueue.Empty())
+                {
+                    ::usleep(interval);
+                    if (isBlock != 1)
+                    {
+                        timeout -= interval;
+                        if (timeout <= 0)
+                        {
+                            ::pthread_mutex_lock(&m_taskLock);
+                            return -1;
+                        }
+                    }
+                }
+                else
+                {
+                    m_freeQueue.Front(taskNode);
+                    m_freeQueue.Pop_front();
+                    taskNode->taskResource = taskResource;
+                    taskNode->taskST = TASK_ST_WAIT;
+                    taskNode->taskID = GenTaskID();
+                    taskNode->param = param;
+                    taskNode->lenOfParam = lenOfParam;
+                    ::clock_gettime(CLOCK_MONOTONIC, &(taskNode->startTime));
+                    if (taskResource->taskResourceType == TASK_RESOURCE_TYPE_SER || taskResource->taskResourceType == TASK_RESOURCE_TYPE_TIME_SER)
+
+                    {
+                        if (taskResource->attr.waitCount != 0 && taskResource->attr.waitTaskNode != NULL)
+                        {
+                            taskResource->attr.waitCount++;
+                            if (taskResource->attr.waitTaskNode->Full())
+                            {
+                                TaskNode_t * tmp = NULL;
+                                taskResource->attr.waitTaskNode->Front(tmp);
+                                m_freeQueue.Push_back(tmp);
+                                taskResource->attr.waitTaskNode->Pop_front();
+                                taskResource->attr.waitCount--;
+                            }
+                            taskResource->attr.waitTaskNode->Push_back(taskNode);
+                        }
+                        else
+                        {
+                            taskResource->attr.waitCount++;
+                            m_taskQueue.Push_back(taskNode);
+                        }
+                    }
+                    else
+                    {
+                        taskResource->attr.waitCount++;
+                        m_taskQueue.Push_back(taskNode);
+                    }
+                }
+                ::pthread_mutex_unlock(&m_taskLock);
+
+                if (taskID != NULL)
+                {
+                    *taskID = taskNode->taskID;
+                }
+
+                ::pthread_cond_signal(&m_taskStartCond);
+                return 0;
+            }
         }
 
         xint32_t SyncHandleTask()
         {
             //等待任务完成
-            return 0;
+            return -1;
         }
 
     public:

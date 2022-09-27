@@ -6,7 +6,7 @@ class X {
 public:
     void func(void * param, int len, void * userParam)
     {
-        printf("len[%d]::%p\n", len, param);
+        printf("len[%d]::%p %p\n", len, param, userParam);
     }
 
 };
@@ -18,15 +18,29 @@ int main()
     X x;
     RM_CODE::TaskPool taskPool;
 
-    xint32_t handle;
+    void * handle;
+
+    void * timeTask;
 
     RM_CODE::Function3<void(void *, xint32_t, void * )> cb(&X::func, &x);
 
     taskPool.Init(1024, 4);
     
-    handle = taskPool.RegisterNormalTask(cb, NULL);
+    handle = taskPool.RegisterNormalTask(cb, (void *)0x23, NULL,  false);
 
-    printf("%d\n", handle);
+    timeTask = taskPool.RegisterTimeTask(cb, (void *)0x22, 2000);
+    
+    taskPool.AsyncExecTask(handle, (void *)0x01, 0);
+    taskPool.AsyncExecTask(handle, (void *)0x02, 0);
+    taskPool.AsyncExecTask(handle, (void *)0x03, 0);
+    taskPool.AsyncExecTask(handle, (void *)0x04, 0);
+    taskPool.AsyncExecTask(handle, (void *)0x05, 0);
+    taskPool.AsyncExecTask(handle, (void *)0x06, 0);
+    taskPool.AsyncExecTask(handle, (void *)0x07, 0);
+    taskPool.AsyncExecTask(handle, (void *)0x08, 0);
+    taskPool.AsyncExecTask(handle, (void *)0x09, 0);
+    taskPool.AsyncExecTask(handle, (void *)0x10, 0);
+    taskPool.AsyncExecTask(handle, (void *)0x11, 0);
 
     pause();
 
