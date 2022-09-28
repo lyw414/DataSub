@@ -9,16 +9,16 @@
 typedef RM_CODE::Function3 <void(void *, xint32_t, void * )> TaskPoolCB_t;
 
 extern "C" {
-    xint32_t RM_CBB_TaskPoolInit(xint32_t maxTaskNum = 0, xint32_t maxThreadNum = 0);
-    
-    void RM_CBB_SetTimeTaskAttr( );
+    xint32_t RM_CBB_TaskPoolCreate(xint32_t maxTaskNum, xint32_t maxThreadNum);
 
-    void RM_CBB_TaskPoolUnInit();
+    void RM_CBB_TaskPoolDestroy();
     
-    void RM_CBB_RegisterTask();
+    void * RM_CBB_RegisterTimeTask(TaskPoolCB_t cb, void * userParam, xuint32_t interval,  bool IsSer = true, xuint32_t maxWaitTaskCount = 5);
+
+    void * RM_CBB_RegisterNormalTask(TaskPoolCB_t cb, void * userParam, bool IsSer = true, xuint32_t maxWaitTaskCount = 5);
     
-    xint32_t RM_CBB_UnRegisterTask();
+    xint32_t RM_CBB_UnRegisterTask(void * handle);
     
-    xint32_t RM_CBB_AddTask();
+    xint32_t RM_CBB_AddTask(void * handle, void * param, xint32_t lenOfParam);
 }
 #endif
