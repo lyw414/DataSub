@@ -146,6 +146,8 @@ namespace RM_CODE
             xint32_t lastIndex = IN->index;
             xint32_t lastNodeID = IN->nodeID;
 
+            xint32_t index = 0;
+
             typeTable = m_cacheTable->typeTable[ID];
 
 
@@ -183,6 +185,7 @@ namespace RM_CODE
                     //typeTable->node[IN->index].rdRecord++;
                     len = typeTable->node[IN->index].lenOfData;
                     tag = 0;
+                    index = IN->index;
                 }
                 else if (typeTable->node[IN->index].st == NODE_ST_F)
                 {
@@ -210,9 +213,9 @@ namespace RM_CODE
                 }
             }
 
-            if (sizeOfData >= typeTable->node[IN->index].lenOfData)
+            if (sizeOfData >= typeTable->node[index].lenOfData)
             {
-                ::memcpy(data, typeTable->node[IN->index].block,  typeTable->node[IN->index].lenOfData);
+                ::memcpy(data, typeTable->node[index].block,  typeTable->node[IN->index].lenOfData);
             }
             else
             {
@@ -220,7 +223,7 @@ namespace RM_CODE
                 IN->nodeID = lastNodeID;
                 len = -4;
             }
-            __sync_fetch_and_sub(&(typeTable->node[IN->index].rdRecord), 1);
+            __sync_fetch_and_sub(&(typeTable->node[index].rdRecord), 1);
 
 
             return len;

@@ -51,7 +51,7 @@ void RM_CBB_ProQuickTransDestroy(key_t key)
 {
     struct shmid_ds buf;
     xint32_t shmID = ::shmget(key, 0, IPC_EXCL);
-    if (shmID > 0)
+    if (shmID >= 0)
     {
         ::shmctl(shmID, IPC_RMID, &buf);
     }

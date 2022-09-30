@@ -2,6 +2,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include "ProQuickTransAPI.h"
+#include "TaskPoolAPI.h"
 #include <stdlib.h>
 
 typedef struct _Data {

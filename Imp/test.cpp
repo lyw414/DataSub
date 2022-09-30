@@ -1,0 +1,224 @@
+#include "ProQuickTransAPI.h"
+#include "TaskPoolAPI.h"
+
+
+#include <sys/types.h>
+#include <unistd.h>
+#include <sys/time.h>
+#include <string.h>
+
+typedef struct _Data {
+    int index;
+    long long time;
+    char tmp[256];
+} Data_t;
+
+typedef struct _ReadParam {
+    ProQuickTransHandle proQuickTransHandle;
+    ProQuickTransNodeIndex_t IN;
+    void * taskHandle;
+    int index;
+    Data_t data;
+} ReadParam_t;
+
+int * readRecord;
+
+
+class Handle {
+public:
+    void handleFunc(void * param, int lenOfParam, void * userParam)
+    {
+        struct timeval rd;
+        long long xx = 0;
+        int res = 0;
+        ReadParam_t * readParam = (ReadParam_t *)userParam;
+        res = RM_CBB_ProQuickTransRead(readParam->proQuickTransHandle, &(readParam->IN), 0, (xbyte_t *)&(readParam->data), sizeof(Data_t), 10000, 0);
+
+        ::gettimeofday(&rd,NULL);
+        
+
+        __sync_fetch_and_add(&readRecord[readParam->index * 3], 1);
+
+        xx = rd.tv_sec * 1000000 + rd.tv_usec - readParam->data.time;
+
+
+        if (xx > 100000000 || xx == 0)
+        {
+            RM_CBB_UnRegisterTask(readParam->taskHandle);
+            delete readParam;
+
+        }
+        else
+        {
+            __sync_fetch_and_add(&readRecord[readParam->index * 3 + 2], xx);
+        }
+    }
+
+    void errFunc(TaskPoolErrCode_e errCode, void * param, int lenOfParam, void * userParam)
+    {
+        ReadParam_t * readParam = (ReadParam_t *)userParam;
+        __sync_fetch_and_add(&readRecord[readParam->index * 3 + 1], 1);
+    }
+
+};
+
+
+
+void Write_Do(int index, int count, int interval)
+{
+    Data_t data;
+
+    ProQuickTransHandle handle = RM_CBB_ProQuickTransInit(0x02);
+
+    struct timeval wr;
+    struct timeval begin;
+    struct timeval end;
+
+    long long times = 0;
+    long long c = count;
+
+    data.index = index;
+
+    int res = 0;
+
+    for (int iLoop = 0; iLoop < count; iLoop++)
+    {
+        //printf("%d\n", iLoop);
+        ::gettimeofday(&wr,NULL);
+        data.time = wr.tv_sec * 1000000 + wr.tv_usec ;
+        //data.time = iLoop;
+        ::gettimeofday(&begin,NULL);
+        //proTrans.Write(0, (unsigned char *)&data, sizeof(Data_t));
+        res = RM_CBB_ProQuickTransWrite(handle, 0, (xbyte_t *)&data, sizeof(Data_t), 1000, 0);
+        ::gettimeofday(&end,NULL);
+        times += (end.tv_sec -  begin.tv_sec) * 1000000 + (end.tv_usec - begin.tv_usec);
+        ::usleep(interval);
+    }
+    
+    data.time = 0;
+    RM_CBB_ProQuickTransWrite(handle, 0, (xbyte_t *)&data, sizeof(Data_t), 0, 0);
+    printf("Index %d Wr %d TPS %lld\n", index, count + 1,  c * 1000 / times);
+    pause();
+
+}
+
+
+void Read_Do(int index, int taskNum, int interval)
+{
+    ProQuickTransHandle handle = RM_CBB_ProQuickTransInit(0x02);
+    RM_CBB_TaskPoolCreate(1024, 8);
+    Handle x;
+
+    TaskPoolCB_t cb(&Handle::handleFunc, &x);
+
+    TaskPoolErrCB_t errCB(&Handle::errFunc, &x);
+
+
+    int successTotal = 0;
+    int errTotal = 0;
+    int intervalTotal = 0;
+
+    readRecord = (int *)::malloc(sizeof(long long) * taskNum * 3);
+
+
+    memset(readRecord, 0x00, sizeof(long long) * taskNum * 3);
+
+    for (int iLoop = 0; iLoop < taskNum; iLoop++)
+    {
+        ReadParam_t * userParam = new ReadParam_t;
+        //userParam->proQuickTransHandle = RM_CBB_ProQuickTransInit(0x02);
+        userParam->proQuickTransHandle = handle;
+        userParam->IN.index = -1;
+        userParam->IN.mode = 0;
+        userParam->index = iLoop;
+        userParam->taskHandle = RM_CBB_RegisterTimeTask(cb, errCB, userParam, interval, true, 5);
+
+    }
+
+    while(true)
+    {
+        sleep(2);
+
+        successTotal = 1;
+        errTotal = 0;
+        intervalTotal = 0;
+        for (int iLoop = 0; iLoop < taskNum; iLoop++)
+        {
+            successTotal += readRecord[iLoop * 3];
+            errTotal += readRecord[iLoop * 3 + 1];
+            intervalTotal += readRecord[iLoop * 3 + 2];
+        }
+        printf("ReadIndex[%d]::success[%d] err[%d] total[%d] interval[%d]\n", index, successTotal, errTotal, successTotal + errTotal, intervalTotal / successTotal);
+    }
+
+}
+
+
+int main(int argc, char * argv[])
+{
+    int wCount;
+    int rCount;
+    int rTCount;
+    int wInterval;
+    int rInterval;
+    int wDCount;
+
+    RM_CBB_ProQuickTransDestroy(0x02);
+
+    RM_CBB_ProQuickTransInit(0x02);
+
+    if (argc > 1)
+    {
+        wCount = atoi(argv[1]);
+    }
+
+    if (argc > 2)
+    {
+        rCount = atoi(argv[2]);
+    }
+
+    if (argc > 3)
+    {
+        rTCount = atoi(argv[3]);
+    }
+
+    if (argc > 4)
+    {
+        wInterval = atoi(argv[4]);
+    }
+
+    if (argc > 5)
+    {
+        rInterval = atoi(argv[5]);
+    }
+
+    if (argc > 6)
+    {
+        wDCount = atoi(argv[6]);
+    }
+
+    for (int iLoop = 0; iLoop < rCount; iLoop++)
+    {
+        if(fork() == 0)
+        {
+            Read_Do(iLoop, rTCount, rInterval);
+            exit(0);
+        }
+
+    }
+
+    for (int iLoop = 0; iLoop < wCount; iLoop++)
+    {
+        if(fork() == 0)
+        {
+            Write_Do(iLoop, wDCount, wInterval);
+            exit(0);
+        }
+    }
+    
+    while(true)
+    {
+        ::sleep(2);
+    }
+    return 0;
+}

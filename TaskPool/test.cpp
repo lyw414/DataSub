@@ -6,26 +6,32 @@
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+
+
+int * recordArray;
 
 class X {
 public:
     void func(void * param, int len, void * userParam)
     {
-        unsigned int x = (unsigned long)param;
+        long index = (long)userParam;
+        __sync_add_and_fetch(&recordArray[index * 2],1);
+        //unsigned int x = (unsigned long)param;
 
-        if ((x % 512) == 0)
-        {
-            printf("len[%d]::user[%p] [%p]\n", len, userParam, param);
-        }
+        //if ((x % 512) == 0)
+        //{
+        //    //printf("len[%d]::user[%p] [%p]\n", len, userParam, param);
+        //}
 
     }
 
-    void error(void * param, int len, void * userParam)
+    void error(TaskPoolErrCode_e errCode, void * param, int len, void * userParam)
     {
-        printf("Timeout len[%d]::user[%p] [%p]\n", len, userParam, param);
+        long index = (long)userParam;
+        __sync_add_and_fetch(&recordArray[index * 2 + 1],1);
+        //printf("errCode[%d] len[%d]::user[%p] [%p]\n",errCode, len, userParam, param);
     }
-
-
 
 };
 
@@ -34,21 +40,22 @@ public:
 void * thread_do(void * ptr)    
 {
     X x;
+
     int index = 0;
     TaskPoolCB_t cb(&X::func, &x);
-    
+    TaskPoolErrCB_t errCB(&X::error, &x);
     //RM_CODE::Function3<void(void *, xint32_t, void * )> er(&X::error, &x);
-    void * handle = RM_CBB_RegisterNormalTask(cb, (void *)ptr, false, 0);
+    void * handle = RM_CBB_RegisterNormalTask(cb, errCB, (void *)ptr, true, 20);
 
-    while(true)
+    while(index < 1000000)
     {
         index++;
         if (RM_CBB_AddTask(handle, (void *)index, 0) < 0)
         {
-            //printf("End\n");
+            printf("Error\n");
             break;
         }
-        usleep(10000);
+        usleep(0);
     }
 }
 
@@ -58,24 +65,49 @@ int main()
     //RM_CBB_TaskPoolUnInit();
     X x;
 
+    char buf[2048] = {0};
     void * handle;
 
     void * timeTask;
+    void * timeTask1;
 
     RM_CBB_TaskPoolCreate(1024, 4);
     
     TaskPoolCB_t cb(&X::func, &x);
-    timeTask = RM_CBB_RegisterTimeTask(cb, (void *)0x22, 2000);
+    TaskPoolErrCB_t errCB(&X::error, &x);
+    timeTask = RM_CBB_RegisterTimeTask(cb, errCB, (void *)0x00, 4000, false);
+    timeTask1 = RM_CBB_RegisterTimeTask(cb, errCB, (void *)0x01, 0, false);
 
     pthread_t pthread;
 
-    for(int iLoop = 0; iLoop < 32; iLoop++)
+    recordArray = (int *)malloc(sizeof(int) * 32 * 2);
+
+    memset(recordArray, 0x00, sizeof(int) * 32 * 2);
+
+    //for(int iLoop = 0; iLoop < 32; iLoop++)
+    //{
+    //    pthread_create(&pthread, NULL, thread_do, (void *)(iLoop));
+    //}
+
+    while(true)
     {
-        pthread_create(&pthread, NULL, thread_do, (void *)(iLoop + 1));
+        sleep(2);
+        memset(buf, 0x00, 2048);
+        printf("*****************************************\n");
+        for (int iLoop = 0; iLoop < 2; iLoop++)
+        {
+            printf("index %d :: success[%d] failed [%d] total[%d]\n", iLoop, recordArray[iLoop * 2], recordArray[iLoop * 2 + 1],recordArray[iLoop * 2] + recordArray[iLoop * 2 + 1]);
+        }
+
+        if (timeTask1 != NULL)
+        {
+            RM_CBB_UnRegisterTask(timeTask1);
+            timeTask1 = NULL;
+        }
+
     }
-
-
-    sleep(5);
+    //sleep(5);
+    pause();
 
     RM_CBB_TaskPoolDestroy();
 

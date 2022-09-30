@@ -248,5 +248,85 @@ namespace RM_CODE
 
     };
 
+
+    template<typename T>
+    class Function4;
+
+    template<typename RES, typename ARGS1, typename ARGS2, typename ARGS3, typename ARGS4>
+    class Function4 <RES(ARGS1,ARGS2,ARGS3,ARGS4)>
+    {
+    private:
+        class None {};
+        typedef RES(None::*objFunc_t)(ARGS1, ARGS2, ARGS3, ARGS4);
+        typedef RES(*stFunc_t)(ARGS1, ARGS2, ARGS3, ARGS4);
+        None * m_obj;
+        
+        union {
+            objFunc_t objFunc;
+            stFunc_t stFunc;
+        } m_func;
+
+
+    public:
+        template<typename OBJ>
+        Function4(RES(OBJ::*func)(ARGS1, ARGS2, ARGS3, ARGS4), OBJ * obj)
+        {
+            m_func.objFunc = (objFunc_t)(func);
+            m_obj = (None *)obj; 
+        }
+
+
+        Function4()
+        {
+            m_obj = NULL;
+            m_func.stFunc = NULL;
+        }
+
+        Function4(RES(*func)(ARGS1, ARGS2, ARGS3, ARGS4))
+        {
+            m_obj = NULL;
+            m_func.stFunc = (stFunc_t)(func);
+        }
+
+        RES operator() (ARGS1 args1, ARGS2 args2, ARGS3 args3, ARGS4 args4)
+        {
+            if (m_obj != NULL)
+            {
+                return (m_obj->*(m_func.objFunc))(args1, args2, args3, args4);
+            }
+            else
+            {
+                return m_func.stFunc(args1, args2, args3, args4);
+            }
+        }
+
+        Function4 & operator= (void * ptr)
+        {
+            m_obj = NULL;
+            m_func.stFunc = (stFunc_t)ptr;
+            return *this;
+        }
+
+        Function4 & operator= (const Function4 & ptr)
+        {
+            m_obj = ptr.m_obj;
+            m_func = ptr.m_func;
+            return *this;
+        }
+
+
+        bool operator== (void * ptr)
+        {
+            return (m_func.stFunc == (stFunc_t)ptr);
+        }
+
+        bool operator!= (void * ptr)
+        {
+            return (m_func.stFunc != (stFunc_t)ptr);
+        }
+
+    };
+
+
 }
 #endif
