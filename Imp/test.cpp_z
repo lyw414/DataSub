@@ -1,0 +1,66 @@
+#include "cstreamaxProQuickTransImpl.h"
+typedef struct _Data {
+    int index;
+    long long time;
+    char tmp[256];
+} Data_t;
+
+
+
+void handle(const xbyte_t *, xint32_t, xpvoid_t, xpvoid_t)
+{
+    printf("XXXXXXXXXXXXXXX\n");
+}
+
+void Write_Do(int index, int count, int interval)
+{
+    Data_t data;
+
+    ProQuickTransHandle handle = RM_CBB_ProQuickTransInit(0xAA);
+
+    struct timeval wr;
+    struct timeval begin;
+    struct timeval end;
+
+    long long times = 0;
+    long long c = count;
+
+    data.index = index;
+
+    int res = 0;
+
+    for (int iLoop = 0; iLoop < count; iLoop++)
+    {
+        ::gettimeofday(&wr,NULL);
+        data.time = wr.tv_sec * 1000000 + wr.tv_usec ;
+        ::gettimeofday(&begin,NULL);
+        res = RM_CBB_ProQuickTransWrite(handle, 0, (xbyte_t *)&data, sizeof(Data_t), 1000, 0);
+        ::gettimeofday(&end,NULL);
+        times += (end.tv_sec -  begin.tv_sec) * 1000000 + (end.tv_usec - begin.tv_usec);
+        if (interval > 0)
+        {
+            ::usleep(interval);
+        }
+        else
+        {
+            sched_yield();
+        }
+    }
+    
+    data.time = 0;
+    RM_CBB_ProQuickTransWrite(handle, 0, (xbyte_t *)&data, sizeof(Data_t), 0, 0);
+    printf("Index %d Wr %d TPS %lld\n", index, count + 1,  c * 1000 / times);
+    pause();
+
+}
+
+
+int main()
+{
+    RM_CBB_ProQuickTransDestroy(0xAA);
+    RM_CODE::ProQuickTransImp::GetInstance()->RegisterTransTask(handle, (void *)0x31, (void *)0x22, 0, 1000);
+    
+    Write_Do(0, 100000, 1000000);
+
+    return 0;
+}

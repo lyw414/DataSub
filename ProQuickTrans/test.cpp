@@ -1,9 +1,7 @@
 #include <sys/time.h>
-#include <sys/types.h>
-#include <unistd.h>
-#include "ProQuickTransAPI.h"
-#include "TaskPoolAPI.h"
 #include <stdlib.h>
+
+#include "ProQuickTransAPI.h"
 
 typedef struct _Data {
     int index;
@@ -17,7 +15,6 @@ void WrDo(int index, int count, int interval)
     //LYW_CODE::ProTrans proTrans;
 
     ProQuickTransHandle handle = RM_CBB_ProQuickTransInit(0x02);
-
     //proTrans.Init(0x02);
     Data_t data;
 
@@ -44,7 +41,14 @@ void WrDo(int index, int count, int interval)
         res = RM_CBB_ProQuickTransWrite(handle, 0, (xbyte_t *)&data, sizeof(Data_t), 1000, 0);
         ::gettimeofday(&end,NULL);
         times += (end.tv_sec -  begin.tv_sec) * 1000000 + (end.tv_usec - begin.tv_usec);
-        ::usleep(interval);
+        if (interval <= 0)
+        {
+            ::sched_yield();
+        }
+        else
+        {
+            ::usleep(interval);
+        }
     }
     
     data.time = 0;
@@ -78,7 +82,7 @@ void RdDo(int index, int interval)
     long long xx = 0;
     while(true)
     {
-        res = RM_CBB_ProQuickTransRead(handle, &IN, 0, (xbyte_t *)&data, sizeof(Data_t), 0, 0);
+        res = RM_CBB_ProQuickTransRead(handle, &IN, 0, (xbyte_t *)&data, sizeof(Data_t), 1000, 0);
         ::gettimeofday(&rd,NULL);
         xx = rd.tv_sec * 1000000 + rd.tv_usec - data.time;
         //useTime = data.time;
@@ -97,6 +101,16 @@ void RdDo(int index, int interval)
            }
         }
         //::usleep(interval);
+
+        if (interval <= 0)
+        {
+            ::sched_yield();
+        }
+        else
+        {
+            ::usleep(interval);
+        }
+
     }
 }
 

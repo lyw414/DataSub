@@ -1,7 +1,7 @@
 #ifndef __RM_CODE_FIX_LEN_LIST_FILE_HPP_
 #define __RM_CODE_FIX_LEN_LIST_FILE_HPP_
 
-#include "type.h"
+#include "streamaxcomdev.h"
 #include <stdlib.h>
 
 namespace RM_CODE
@@ -145,7 +145,7 @@ namespace RM_CODE
         xint32_t Reset(xuint32_t maxSize)
         {
             UnInit();
-            Init(maxSize);
+            return Init(maxSize);
         }
 
         xint32_t Init(xuint32_t maxSize)

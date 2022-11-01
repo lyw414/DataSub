@@ -1189,6 +1189,60 @@ namespace LYW_CODE
             return -4;
         }
 
+
+        int QueryMsgIndex(int msgID)
+        {
+            MapInfo_t * mapInfo = NULL;
+
+            ProMap_t * proMap = NULL;
+
+            MsgMap_t * msgMap = NULL;
+
+
+            unsigned int * record = NULL;
+
+            int msgIndex = -1;
+            
+            if (IsInit() < 0)
+            {
+                return -1;
+            }
+            
+
+            if (m_mapUpdateTag == 1)
+            {
+                //等待 更新完成 
+                m_reCount_swap++;
+                //进行读操作 使用 m_mapInfo_swap 此处代码禁止阻塞 不懂勿动
+                mapInfo = m_mapInfo_swap;
+                msgMap = m_msgMap_swap;
+                record = &m_reCount_swap;
+            }
+            else
+            {
+                m_reCount++;
+                //进行读操作 使用 m_mapInfo 此处代码禁止阻塞 不懂勿动
+                mapInfo = m_mapInfo;
+                msgMap = m_msgMap;
+                record = &m_reCount;
+            }
+
+            
+            for (int iLoop = 0; iLoop < mapInfo->msgMapSize; iLoop++)
+            {
+                *record += 1;
+                msgMap = (MsgMap_t *)((unsigned char *)msgMap + (sizeof(MsgMap_t) + mapInfo->proSubMapSize) * iLoop);
+                
+                if (msgMap->st == 1 && msgMap->msgID == msgID)
+                {
+                    msgIndex = iLoop;
+                    return msgIndex;
+                }
+            }
+
+            return -4;
+        }
+
     };
 }
 

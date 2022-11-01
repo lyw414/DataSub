@@ -12,7 +12,11 @@
 #include "SimpleFunction.hpp"
 #include "TaskPoolDefine.h"
 #include "FixLenList.hpp"
-#include "type.h"
+#include "streamaxcomdev.h"
+
+#include "streamaxlog.h"
+
+#include <sys/prctl.h>
 
 namespace RM_CODE
 {
@@ -267,6 +271,8 @@ namespace RM_CODE
                 m_waitFreeTaskResource.clear();
                 ::pthread_mutex_unlock(&m_lock);
             }
+
+            return 0;
         }
 
 
@@ -430,7 +436,7 @@ namespace RM_CODE
             xuint32_t interval = 0;
             xint64_t usedTime = 0;
 
-
+            ::prctl(PR_SET_NAME, "TASKPOOL_TIME", 0, 0, 0);
             struct timespec nowTime;
             struct timespec lastTime;
 
@@ -439,8 +445,11 @@ namespace RM_CODE
 
             ver = m_timeTaskResourceVer - 100;
 
+
+
             while (threadInfo->threadST == THREAD_ST_RUN)
             {
+		        //RM_CBB_LOG_ERROR("CBB.TASKPOOL", "Time Task DO....... %d\n", getpid());
                 ::clock_gettime(CLOCK_MONOTONIC, &nowTime);
                 CheckAndUploadTimeTaskResource(ver, timeTask, interval);
                 usedTime = (nowTime.tv_sec - lastTime.tv_sec) * 1000 +  (nowTime.tv_nsec - lastTime.tv_nsec) / 1000000;
@@ -456,14 +465,12 @@ namespace RM_CODE
                     {
                         timeTask[iLoop].leftTime = timeTask[iLoop].taskResource->attr.interval;
                         AsyncExecTask(timeTask[iLoop].taskResource, NULL, 0);
-                        //printf("ssss %d\n", timeTask[iLoop].taskResource->attr.interval);
                     }
                 }
                 ::usleep(interval);
             }
 
             threadInfo->threadST = THREAD_ST_FINISHED;
-            printf("FINISHED\n");
         }
 
         static void * MngThreadEnter(void *ptr)
@@ -486,6 +493,8 @@ namespace RM_CODE
             std::vector<ThreadInfo_t *> thread; 
             xuint32_t threadInfoVer = m_threadInfoVer - 100;
             xint32_t threadCheckInterval = 0;
+
+            ::prctl(PR_SET_NAME, "TASKPOOL_MNG", 0, 0, 0);
 
             while(m_taskPoolST == TASK_POOL_ST_START)
             {
@@ -559,7 +568,6 @@ namespace RM_CODE
 
             m_taskPoolST = TASK_POOL_ST_STOPPED;
 
-            printf("FINISHED\n");
         }
 
         static void * MonThreadEnter(void *ptr)
@@ -576,6 +584,8 @@ namespace RM_CODE
             {
                 return;
             }
+
+            ::prctl(PR_SET_NAME, "TASKPOOL_MON", 0, 0, 0);
 
             while(threadInfo->threadST == THREAD_ST_RUN)
             {
@@ -603,6 +613,9 @@ namespace RM_CODE
             TaskNode_t * tmp = NULL;
 
             struct timespec wakeTime;
+
+            ::prctl(PR_SET_NAME, "TASKPOOL_WORK", 0, 0, 0);
+
             while(threadInfo->threadST == THREAD_ST_RUN || !m_taskQueue.Empty())
             {
                 taskNode = NULL;
@@ -650,21 +663,25 @@ namespace RM_CODE
                         }
                     }
 
-                    taskNode->taskST = TASK_ST_FINISHED;
-                    taskNode->errCode = TASK_POOL_NORMAL;
                     
                     ::pthread_mutex_lock(&m_taskLock);
-                    taskNode->taskResource->attr.waitCount--;
-                    
 
-                    if (taskNode->taskResource->attr.waitTaskNode != NULL && !(taskNode->taskResource->attr.waitTaskNode->Empty()))
+                    if (taskNode->errCode == TASK_POOL_NORMAL)
                     {
-                        taskNode->taskResource->attr.waitTaskNode->Front(tmp);
-                        taskNode->taskResource->attr.waitTaskNode->Pop_front();
-                        tmp->waitQueueListNode = NULL;
+                        if (taskNode->taskResource->attr.waitTaskNode != NULL && !(taskNode->taskResource->attr.waitTaskNode->Empty()))
+                        {
+                            taskNode->taskResource->attr.waitTaskNode->Front(tmp);
+                            taskNode->taskResource->attr.waitTaskNode->Pop_front();
+                            tmp->waitQueueListNode = NULL;
 
-                        tmp->taskQueueListNode = m_taskQueue.Push_back(tmp);
+                            tmp->taskQueueListNode = m_taskQueue.Push_back(tmp);
+                        }
                     }
+
+                    taskNode->taskST = TASK_ST_FINISHED;
+                    taskNode->errCode = TASK_POOL_NORMAL;
+                    taskNode->taskResource->attr.waitCount--;
+
                     taskNode->taskQueueListNode = NULL;
                     taskNode->waitQueueListNode = NULL;
                     m_freeQueue.Push_back(taskNode);
@@ -674,7 +691,6 @@ namespace RM_CODE
             
             threadInfo->threadST = THREAD_ST_FINISHED;
 
-            printf("FINISHED\n");
         }
 
     public:
@@ -762,6 +778,7 @@ namespace RM_CODE
             }
             ::pthread_mutex_unlock(&m_lock);
         }
+
 
         void * RegisterNormalTask(CallBack handleFunc, ErrCallBack errFunc, void * userParam, bool IsSer = true, xuint32_t maxWaitTaskCount = 5)
         {
@@ -1047,9 +1064,6 @@ namespace RM_CODE
             //等待任务完成
             return -1;
         }
-
-    public:
-
     };
 }
 #endif

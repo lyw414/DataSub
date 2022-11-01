@@ -9,6 +9,8 @@
 #include <arpa/inet.h>
 
 
+int pInterval;
+
 typedef struct _Data {
     int index;
     long long time;
@@ -51,6 +53,15 @@ void * ThreadDo(void * ptr)
         res = send(sck, &data, sizeof(Data_t), 0);
         ::gettimeofday(&end,NULL);
         times += (end.tv_sec -  begin.tv_sec) * 1000000 + (end.tv_usec - begin.tv_usec);
+
+        if (pInterval <= 0)
+        {
+            ::sched_yield();
+        }
+        else
+        {
+            ::usleep(pInterval);
+        }
     }
 
     data.time = 0;
@@ -217,7 +228,7 @@ int main(int argc, char * argv[])
 
     if (argc > 3)
     {
-        WInterval = atoi(argv[3]);
+       pInterval = WInterval = atoi(argv[3]);
     }
 
 

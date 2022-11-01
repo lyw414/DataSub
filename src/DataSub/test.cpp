@@ -15,7 +15,9 @@ int main()
 {
     X x;
     
-    char buf[] = "12345678";
+    char buf[128] = {0};
+
+    ::memset(buf, 0x31, 128);
     LYW_CODE::DataSub dataSub;
     dataSub.Init("Test");
 
@@ -26,7 +28,7 @@ int main()
     dataSub.Subcribe(11, LYW_CODE::Function3 <void(void *, unsigned int, void *)> (&X::Do, &x), NULL, 0, 0);
     while(true)
     {
-        dataSub.Publish(11, buf, 9);
+        dataSub.Publish(11, buf, 128);
         sleep(2);
     }
     return 0;

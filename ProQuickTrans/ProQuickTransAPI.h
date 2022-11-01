@@ -5,7 +5,7 @@
 #include <sys/types.h>
 #include <map>
 
-#include "type.h"
+#include "streamaxcomdev.h"
 #include "ProQuickTransDefine.h"
 
 #define PRO_QUICK_TRANS_DEFINE_BEGIN() static const xint32_t g_proQuickTransCFG[] = {
@@ -31,21 +31,21 @@ extern "C" {
      * 
      * @return              失败 NULL 成功句柄
      */
-    ProQuickTransHandle RM_CBB_ProQuickTransInit(key_t key);
+    INTERFACE_API ProQuickTransHandle RM_CBB_ProQuickTransInit(key_t key);
     
     /**
      * @brief               释放句柄资源
      * @param[in]handle     RM_CBB_ProQuickTransInit 获取
      *
      */
-    void RM_CBB_ProQuickTransUnInit(ProQuickTransHandle * h);
+    INTERFACE_API void RM_CBB_ProQuickTransUnInit(ProQuickTransHandle * h);
     
     /**
      * @brief               销毁共享缓存
      * @param[in]key        键值
      * 
      */
-    void RM_CBB_ProQuickTransDestroy(key_t key);
+    INTERFACE_API void RM_CBB_ProQuickTransDestroy(key_t key);
     
     /**
      * @brief                   写数据
@@ -59,7 +59,7 @@ extern "C" {
      * @return  >= 0            成功
      *          <  0            失败 错误码 -1 写超时 -2 数据过大
      */
-    xint32_t RM_CBB_ProQuickTransWrite(ProQuickTransHandle h, xint32_t id, xbyte_t * data, xint32_t lenOfData, xint32_t interval = 10000, xint32_t timeout = 0);
+    INTERFACE_API xint32_t RM_CBB_ProQuickTransWrite(ProQuickTransHandle h, xint32_t id, xbyte_t * data, xint32_t lenOfData, xint32_t interval = 10000, xint32_t timeout = 0);
     
     
     /**
@@ -75,6 +75,16 @@ extern "C" {
      * @return  >= 0            成功
      *          <  0            失败 错误码 -1 超时 -2 缓存池过小
      */
-    xint32_t RM_CBB_ProQuickTransRead(ProQuickTransHandle h, ProQuickTransNodeIndex_t * IN, xint32_t id, xbyte_t * data, xint32_t sizeOfData, xint32_t interval = 10000, xint32_t timeout = 0);
+    INTERFACE_API xint32_t RM_CBB_ProQuickTransRead(ProQuickTransHandle h, ProQuickTransNodeIndex_t * IN, xint32_t id, xbyte_t * data, xint32_t sizeOfData, xint32_t interval = 10000, xint32_t timeout = 0);
+
+    /**
+     * @brief                   获取指定id类型数据的长度大小
+     *
+     * @param[in]id             数据类型ID
+     *   
+     * @return  >= 0            成功  
+     *          <  0            失败 错误码
+     */
+    INTERFACE_API xint32_t RM_CBB_ProQuickTransDataSize(ProQuickTransHandle h, xint32_t id);
 }
 #endif

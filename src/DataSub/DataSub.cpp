@@ -115,7 +115,6 @@ namespace LYW_CODE
             ::pthread_create(&m_thread, &m_attr, DataSub::RecvFromIPC_, this);
 
 
-            return 0;
         }
         else
         {
@@ -125,7 +124,7 @@ namespace LYW_CODE
                 //获取参数
                 if ((m_param = (ShareInfo_t *)(ProClientTable::GetInstance()->GetParam(name))) != NULL)
                 {
-                    return 0;
+                    break;
                 }
                 retry--;
                 usleep(500000);
@@ -135,13 +134,10 @@ namespace LYW_CODE
             m_param->proSub->Connect();
 
 
-
-
-            return -1;
         }
         m_cliIndex = m_param->thSub->CliRegister();
         m_proID = m_param->proSub->ProRegister(getpid());
-        
+        return 0;
     }
 
 
@@ -206,10 +202,9 @@ namespace LYW_CODE
             //获取进程订阅消息
             data = (char *)m_param->ipc->Read(BH, BH, IsNeed, &m_proID);
 
-
             taskNode.param = data;
 
-            taskNode.lenOfParam = 0;
+            taskNode.lenOfParam = 128;
 
             //添加块处理任务
             m_param->task->AddTask(taskNode);
@@ -293,7 +288,7 @@ namespace LYW_CODE
 
         int proBitMapLen = *(int *)((unsigned char *)msg + sizeof(int));
 
-
+        //printf("PPPPPPPPPPPPPPPPP %d\n", lenOfMsg);
         TaskPool::TaskNode_t taskNode;
 
         taskNode.handleFunc = Function2<void (void *, unsigned int)> (&DataSub::DoThreadHandleFunc, this);
@@ -352,15 +347,22 @@ namespace LYW_CODE
         
         int len = 0;
         
+        
         if (msgIndex == -1)
         {
-            //无人订阅该消息
-            return 0;
-            //msgIndex = m_param->proSub->MsgRegister(msgID, m_proID, getpid());
-            //m_param->thSub->SetProMsgMap(msgID, msgIndex);
+            msgIndex = m_param->proSub->QueryMsgIndex(msgID);
+            if (msgIndex < 0)
+            {
+                return -1;
+            }
+
+            m_param->thSub->SetProMsgMap(msgID, msgIndex);
         }
 
-        m_param->proSub->QuerySubPro(msgIndex, msgID, (unsigned char *)msg + sizeof(int)*2, 32, len);
+
+        int x = m_param->proSub->QuerySubPro(msgIndex, msgID, (unsigned char *)msg + sizeof(int)*2, 32, len);
+
+        printf("ProSub Info::%02X\n", len);
         
         *((int *)msg) = msgID;
 

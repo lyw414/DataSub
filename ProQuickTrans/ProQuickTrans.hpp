@@ -1,7 +1,7 @@
 #ifndef __RM_CBB_API_PRO_QUICK_TRANS_FILE_HPP__
 #define __RM_CBB_API_PRO_QUICK_TRANS_FILE_HPP__
 
-#include "type.h"
+#include "streamaxcomdev.h" 
 #include "ProQuickTransDefine.h"
 
 #include <sys/types.h>
@@ -13,7 +13,7 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <errno.h>
-
+#include <stdio.h>
 
 #include <map>
 
@@ -56,21 +56,23 @@ namespace RM_CODE
             xint32_t rdRecord;
             NodeST_e st;
             xint32_t lenOfData;
-            xbyte_t * block;
+            xint32_t block;
         } Node_t;
 
         typedef struct _TypeTable {
             pthread_mutex_t lock;     
             pthread_mutexattr_t lockAttr;
             NodeInfo_t nodeInfo;
-            Node_t * node;
+            Node_t node[0];
         } TypeTable_t;
         
         typedef struct _CacheTable {
             int totalSize;              //map的大小
             int st;                     //map状态 0 未就绪 1 就绪
             int size;                   //数组typeTable的size
-            TypeTable_t ** typeTable;   //typeTable 数组
+            //TypeTable_t ** typeTable;   //typeTable 数组
+            int seekIndex[0];
+            
         } CacheTable_t;
 
 
@@ -138,7 +140,7 @@ namespace RM_CODE
 
             xint32_t retryTimes = timeout;
 
-            if (NULL == IN || NULL == m_cacheTable || ID < 0 || ID >= m_cacheTable->size || NULL == m_cacheTable->typeTable[ID])
+            if (NULL == IN || NULL == m_cacheTable || ID < 0 || ID >= m_cacheTable->size || m_cacheTable->seekIndex[ID] <= 0)
             {
                 return -2;
             }
@@ -148,7 +150,7 @@ namespace RM_CODE
 
             xint32_t index = 0;
 
-            typeTable = m_cacheTable->typeTable[ID];
+            typeTable = (TypeTable_t *)((xbyte_t *)m_cacheTable + m_cacheTable->seekIndex[ID]);
 
 
             while (tag == 1)
@@ -185,25 +187,35 @@ namespace RM_CODE
                     //typeTable->node[IN->index].rdRecord++;
                     len = typeTable->node[IN->index].lenOfData;
                     tag = 0;
-                    index = IN->index;
                 }
                 else if (typeTable->node[IN->index].st == NODE_ST_F)
                 {
                     IN->index = 0;
                     IN->nodeID = typeTable->node[IN->index].nodeID;
                 }
+
+                index = IN->index;
+
                 UnLock(&(typeTable->lock));
                 while(tag == 1)
                 {
-                    if (typeTable->node[IN->index].st == NODE_ST_RR)
+                    if (typeTable->node[index].st == NODE_ST_RR)
                     {
                         break;
                     }
 
-                    ::usleep(interval);
+                    if (interval > 0)
+                    {
+                        ::usleep(interval);
+                    }
+                    else
+                    {
+                        ::sched_yield();
+                    }
 
                     if (timeout > 0 && (retryTimes -= interval) <= 0)
                     {
+
                         IN->index = lastIndex;
                         IN->nodeID = lastNodeID;
 
@@ -215,10 +227,11 @@ namespace RM_CODE
 
             if (sizeOfData >= typeTable->node[index].lenOfData)
             {
-                ::memcpy(data, typeTable->node[index].block,  typeTable->node[IN->index].lenOfData);
+                ::memcpy(data, (xbyte_t *)m_cacheTable + typeTable->node[index].block,  typeTable->node[index].lenOfData);
             }
             else
             {
+
                 IN->index = lastIndex;
                 IN->nodeID = lastNodeID;
                 len = -4;
@@ -241,12 +254,12 @@ namespace RM_CODE
 
             xint32_t retryTimes = timeout;
 
-            if (NULL == IN || NULL == m_cacheTable || ID < 0 || ID >= m_cacheTable->size || NULL == m_cacheTable->typeTable[ID])
+            if (NULL == IN || NULL == m_cacheTable || ID < 0 || ID >= m_cacheTable->size || m_cacheTable->seekIndex[ID] <= 0)
             {
                 return -2;
             }
 
-            typeTable = m_cacheTable->typeTable[ID];
+            typeTable = (TypeTable_t *)((xbyte_t *)m_cacheTable + m_cacheTable->seekIndex[ID]);
 
 
             while (tag == 1)
@@ -296,7 +309,7 @@ namespace RM_CODE
 
             if (sizeOfData >= typeTable->node[IN->index].lenOfData)
             {
-                ::memcpy(data, typeTable->node[IN->index].block,  typeTable->node[IN->index].lenOfData);
+                ::memcpy(data, (xbyte_t *)m_cacheTable + typeTable->node[IN->index].block,  typeTable->node[IN->index].lenOfData);
             }
             else
             {
@@ -320,13 +333,12 @@ namespace RM_CODE
 
             xint32_t retryTimes = timeout;
 
-            if (NULL == IN || NULL == m_cacheTable || ID < 0 || ID >= m_cacheTable->size || NULL == m_cacheTable->typeTable[ID])
+            if (NULL == IN || NULL == m_cacheTable || ID < 0 || ID >= m_cacheTable->size || m_cacheTable->seekIndex[ID] <= 0)
             {
                 return -2;
             }
 
-            typeTable = m_cacheTable->typeTable[ID];
-
+            typeTable = (TypeTable_t *)((xbyte_t *)m_cacheTable + m_cacheTable->seekIndex[ID]);
 
             while (tag == 1)
             {
@@ -374,7 +386,7 @@ namespace RM_CODE
 
             if (sizeOfData >= typeTable->node[IN->index].lenOfData)
             {
-                ::memcpy(data, typeTable->node[IN->index].block,  typeTable->node[IN->index].lenOfData);
+                ::memcpy(data, (xbyte_t *)m_cacheTable + typeTable->node[IN->index].block,  typeTable->node[IN->index].lenOfData);
             }
             else
             {
@@ -418,7 +430,6 @@ namespace RM_CODE
             cfg.ID = ID;
             cfg.blockCount = blockCount + 1;
             cfg.blockSize = blockSize;
-
             ::pthread_mutex_lock(&m_lock);
             m_cfg[ID] = cfg;
             ::pthread_mutex_unlock(&m_lock);
@@ -490,15 +501,16 @@ namespace RM_CODE
 
                 ptr += sizeof(CacheTable_t);
 
-                m_cacheTable->typeTable = (TypeTable_t **)ptr;
+                //m_cacheTable->seekIndex = (int *)ptr;
 
-                ptr += (maxID + 1) * sizeof(TypeTable_t *);
+                ptr += (maxID + 1) * sizeof(int);
 
 
                 for (it = tmpCFG.begin(); it != tmpCFG.end(); it++ )
                 {
                     typeTable = (TypeTable_t *)ptr;
-                    m_cacheTable->typeTable[it->first] = typeTable;
+                    //m_cacheTable->typeTable[it->first] = typeTable;
+                    m_cacheTable->seekIndex[it->first] = (int)(ptr - (xbyte_t *)m_cacheTable);
                     //进程锁初始化
                     pthread_mutexattr_init(&typeTable->lockAttr);
 
@@ -512,7 +524,6 @@ namespace RM_CODE
 
                     ptr += sizeof(TypeTable_t);
 
-                    typeTable->node = (Node_t *)ptr;
 
                     ptr += it->second.blockCount * sizeof(Node_t);
 
@@ -522,7 +533,7 @@ namespace RM_CODE
                         typeTable->node[iLoop].st = NODE_ST_F;
                         typeTable->node[iLoop].rdRecord = 0;
                         typeTable->node[iLoop].nodeID = iLoop + 1;
-                        typeTable->node[iLoop].block = ptr + iLoop * it->second.blockSize;
+                        typeTable->node[iLoop].block = (xint32_t)(ptr + iLoop * it->second.blockSize - (xbyte_t *)m_cacheTable);
                     }
 
 
@@ -581,6 +592,19 @@ namespace RM_CODE
             ::pthread_mutex_unlock(&m_lock);
         }
 
+
+        xint32_t DataSize(xint32_t ID)
+        {
+            if (m_cacheTable == NULL || ID < 0 || ID >= m_cacheTable->size || m_cacheTable->seekIndex[ID] <= 0)
+            {
+                return -1;
+            }
+
+            TypeTable_t * typeTable = (TypeTable_t *)((xbyte_t *)m_cacheTable + m_cacheTable->seekIndex[ID]);
+            
+            return typeTable->nodeInfo.blockSize;
+        }
+
         xint32_t Write(xint32_t ID, xbyte_t * data, xint32_t lenOfData, xint32_t interval = 10000, xint32_t timeout = 0)
         {
             TypeTable_t * typeTable = NULL;
@@ -593,28 +617,44 @@ namespace RM_CODE
 
             NodeST_e st;
 
-            if (m_cacheTable == NULL || ID < 0 || ID >= m_cacheTable->size || m_cacheTable->typeTable[ID] == NULL || lenOfData > m_cacheTable->typeTable[ID]->nodeInfo.blockSize)
+            if (m_cacheTable == NULL || ID < 0 || ID >= m_cacheTable->size || m_cacheTable->seekIndex[ID] <= 0)
             {
                 return -1;
             }
             
-            typeTable = m_cacheTable->typeTable[ID];
+            typeTable = (TypeTable_t *)((xbyte_t *)m_cacheTable + m_cacheTable->seekIndex[ID]);
+
+            if (lenOfData > typeTable->nodeInfo.blockSize)
+            {
+                return -2;
+            }
+
             index = -1;
 
             while (true)
             {
-                Lock(&typeTable->lock);
-                if (typeTable->node[typeTable->nodeInfo.wIndex].st == NODE_ST_WW)
+
+                index = typeTable->nodeInfo.wIndex;
+                if (index < 0 || index >= typeTable->nodeInfo.blockSize || typeTable->node[index].st == NODE_ST_WW)
                 {
-                    UnLock(&typeTable->lock);
-                    //阻塞等待写完成
-                    ::usleep(interval);
-                    if (timeout < 0 && (retryTimes -= interval) == 0)
+                    if (interval > 0)
+                    {
+                        ::usleep(interval);
+                    }
+                    else
+                    {
+                        ::sched_yield();
+                    }
+                    if (timeout < 0 && (retryTimes -= (interval + 1)) == 0)
                     {
                         return -2;
                     }
+                    continue;
                 }
-                else
+
+                //检测状态正常后进行锁 -- 减少锁的次数
+                Lock(&typeTable->lock);
+                if (typeTable->node[typeTable->nodeInfo.wIndex].st != NODE_ST_WW)
                 {
                     st = typeTable->node[typeTable->nodeInfo.wIndex].st;
                     typeTable->node[typeTable->nodeInfo.wIndex].st = NODE_ST_WW;
@@ -627,11 +667,14 @@ namespace RM_CODE
                     UnLock(&typeTable->lock);
                     break;
                 }
+                UnLock(&typeTable->lock);
             }     
 
             while (typeTable->node[index].rdRecord > 0)
             {
+                //::sched_yield();
                 usleep(0);
+ 
                 if ((--retryTimes) == 0)
                 {
                     //恢复状态
@@ -642,7 +685,7 @@ namespace RM_CODE
 
             //数据拷贝
             typeTable->node[index].lenOfData = lenOfData;
-            ::memcpy(typeTable->node[index].block, data, lenOfData);
+            ::memcpy(typeTable->node[index].block + (xbyte_t *)m_cacheTable, data, lenOfData);
             //提交状态 开发读
             typeTable->node[index].st = NODE_ST_RR;
 

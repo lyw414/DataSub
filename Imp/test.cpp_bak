@@ -76,7 +76,7 @@ void Write_Do(int index, int count, int interval)
 {
     Data_t data;
 
-    ProQuickTransHandle handle = RM_CBB_ProQuickTransInit(0xAA);
+    ProQuickTransHandle handle = RM_CBB_ProQuickTransInit(0x02);
 
     struct timeval wr;
     struct timeval begin;
@@ -120,7 +120,7 @@ void Write_Do(int index, int count, int interval)
 
 void Read_Do(int index, int taskNum, int interval)
 {
-    ProQuickTransHandle handle = RM_CBB_ProQuickTransInit(0xAA);
+    ProQuickTransHandle handle = RM_CBB_ProQuickTransInit(0x02);
     RM_CBB_TaskPoolCreate(1024, 4);
     Handle x;
 
@@ -181,9 +181,9 @@ int main(int argc, char * argv[])
     int rInterval;
     int wDCount;
 
-    RM_CBB_ProQuickTransDestroy(0xAA);
+    RM_CBB_ProQuickTransDestroy(0x02);
 
-    RM_CBB_ProQuickTransInit(0xAA);
+    RM_CBB_ProQuickTransInit(0x02);
 
     if (argc > 1)
     {

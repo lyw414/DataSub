@@ -1,40 +1,52 @@
 #include "TaskPoolAPI.h"
 #include "TaskPool.hpp"
 
-static RM_CODE::TaskPool * g_taskPool = new RM_CODE::TaskPool();
+static RM_CODE::TaskPool * gTaskPool = new RM_CODE::TaskPool();
 
-xint32_t RM_CBB_TaskPoolCreate(xint32_t maxTaskNum, xint32_t maxThreadNum)
+INTERFACE_API void RM_CBB_TaskPoolCreate(xint32_t maxTaskNum, xint32_t maxThreadNum)
 {
-    g_taskPool->Init(maxTaskNum, maxThreadNum);
+    gTaskPool->Init(maxTaskNum, maxThreadNum);
+    return;
 }
 
-void RM_CBB_TaskPoolDestroy()
+INTERFACE_API void RM_CBB_TaskPoolDestroy()
 {
-    g_taskPool->UnInit();
+    gTaskPool->UnInit();
+    return;
+}
+
+/**
+ * @brief           更新全局资源 - fork之后替换原有资源
+ *
+ */
+INTERFACE_API void RM_CBB_TaskPoolNew()
+{
+    gTaskPool = new RM_CODE::TaskPool();
+    return;
 }
     
-void * RM_CBB_RegisterTimeTask(TaskPoolCB_t cb, TaskPoolErrCB_t errCB, void * userParam, xuint32_t interval,  bool isSer, xuint32_t maxWaitTaskCount)
+
+INTERFACE_API TaskHandle RM_CBB_RegisterTimeTask(TaskPoolCB_t cb, TaskPoolErrCB_t errCB, void * userParam, xuint32_t interval,  bool IsSer, xuint32_t maxWaitTaskCount)
 {
-    return g_taskPool->RegisterTimeTask(cb, errCB, userParam, interval, isSer, maxWaitTaskCount );
+    return gTaskPool->RegisterTimeTask(cb, errCB, userParam, interval, IsSer, maxWaitTaskCount );
 }
 
-void * RM_CBB_RegisterNormalTask(TaskPoolCB_t cb, TaskPoolErrCB_t errCB, void * userParam, bool isSer, xuint32_t maxWaitTaskCount)
-{
-    return g_taskPool->RegisterNormalTask(cb, errCB,userParam, isSer, maxWaitTaskCount);
-}
-    
-xint32_t RM_CBB_UnRegisterTask(void * handle)
-{
-    return g_taskPool->UnRegisterTask(handle);
-}
-    
-xint32_t RM_CBB_AddTask(void * handle, void * param, xint32_t lenOfParam)
-{
-    return g_taskPool->AsyncExecTask(handle, param, lenOfParam);
-}
 
-void testX()
+INTERFACE_API TaskHandle RM_CBB_RegisterNormalTask(TaskPoolCB_t cb, TaskPoolErrCB_t errCB, void * userParam, bool IsSer, xuint32_t maxWaitTaskCount)
 {
-    //g_taskPool->AsyncExecTask(handle, param, lenOfParam);
+    return gTaskPool->RegisterNormalTask(cb, errCB,userParam, IsSer, maxWaitTaskCount);
+}
+    
+
+INTERFACE_API xint32_t RM_CBB_UnRegisterTask(TaskHandle handle)
+
+{
+    return gTaskPool->UnRegisterTask(handle);
+}
+    
+
+INTERFACE_API xint32_t RM_CBB_AddTask(TaskHandle handle, void * param, xint32_t lenOfParam)
+{
+    return gTaskPool->AsyncExecTask(handle, param, lenOfParam);
 }
 
