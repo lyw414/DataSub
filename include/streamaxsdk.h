@@ -4,7 +4,6 @@
 #include <unistd.h>
 #include <sys/time.h>
 
-
 typedef struct  _GpsInfo {
     char dd[512];
 } GpsInfo_t;

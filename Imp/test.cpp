@@ -81,13 +81,12 @@ void Write_Do(int index, int count, int interval)
     struct timeval wr;
     struct timeval begin;
     struct timeval end;
+    int res = 0;
 
     long long times = 0;
     long long c = count;
 
     data.index = index;
-
-    int res = 0;
 
     for (int iLoop = 0; iLoop < count; iLoop++)
     {
@@ -175,7 +174,7 @@ void Read_Do(int index, int taskNum, int interval)
 int main(int argc, char * argv[])
 {
     int wCount;
-    int rCount;
+    int rCount = 0;
     int rTCount;
     int wInterval;
     int rInterval;
