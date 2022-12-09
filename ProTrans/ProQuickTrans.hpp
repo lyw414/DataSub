@@ -26,33 +26,33 @@ namespace RM_CODE
             NODE_ST_WW,     //正在写，禁止读与写，读写均阻塞至该状态
             NODE_ST_RR,     //读就绪，可读可写
             NODE_ST_NONE,   //无效，可写不可读，读操作直接跳过该节点
-        } NodeST_e;
+            NODE_ST_CHECK   //待检测节点 需要检测是否内部节点存待写 读操作 均无之后则可以设置为 NODE_ST_NONE
 
-        typedef enum _CacheTableWriteLock {
-            CACHE_TABLE_WRITE_LOCK,
-            CACHE_TABLE_WRITE_UNLOCK,
-        } CacheTableWriteLock_e;
+        } NodeST_e;
         
         typedef struct _Node {
-            NodeST_e st;
-            xuint32_t rdRecord;
-            xint32_t size;      //不包含Node_t
+            NodeST_e st;                //节点状态
+            xuint32_t rdRecord;         //读计数
+            xint32_t size;              //不包含Node_t
+            xint32_t len;               //数据长度 
             xint32_t preIndex;
             xint32_t nextIndex;
-            xint32_t lenOfData;
+            xint32_t checkNextIndex;    //缓存块合并nextIndex
+
             xbyte_t dataPtr[0];
         } Node_t;
         
         typedef struct _CacheTable {
-
             pthread_mutex_t lock;           //进程锁
             pthread_mutexattr_t lockAttr;
+
+            pthread_mutex_t wLock;           //写锁
+            pthread_mutexattr_t wLockAttr;
 
             xint32_t size;          //CacheTable_t::ptr 的size
             xint32_t maxCacheSize;  //最大存放数据Size
             xuint32_t varifyID;     //校验ID
             xint32_t wIndex;        //写索引
-            CacheTableWriteLock_e writeLock;    //写锁标识
                                 
             xbyte_t ptr[0];     //Node_t 链表起始地址
         } CacheTable_t;
@@ -103,22 +103,319 @@ namespace RM_CODE
         }
 
         /**
+         * @brief                       读取数据
+         *
+         * @param ID                    类型ID
+         * @param readIndex             读索引
+         * @param data                  读数据缓存
+         * @param sizeOfData            读数据缓存大小 
+         * @param outLen                数据长度
+         * @param timeout               超时时间 ms
+         * @param spinInterval          自旋间隔 ms
+         *
+         * @return  >= 0                成功
+         *          <  0                失败 
+         */
+        xint32_t Read_Order(xint32_t ID, ProQuickTransReadIndex_t * readIndex, void * data, xint32_t sizeOfData, xint32_t * outLen,  xint32_t timeout, xint32_t spinInterval)
+        {
+            CacheTable_t * pCacheTable = NULL;
+            
+            Node_t * pNode = NULL;
+
+            xint32_t rIndex = 0;
+
+            ProQuickTransReadIndex_t RI;
+
+            ProQuickTransReadIndex_t NRI;
+
+            xint32_t * leftTime = NULL;
+            
+            //0 过期索引 1 有效索引
+            xint32_t isInvalid = 0;
+
+            if (timeout != 0)
+            {
+                leftTime = &timeout;
+            }
+ 
+            //合法性检测
+            if (IsInit() < 0)
+            {
+                RM_CBB_LOG_ERROR("PROQUICKTRANS","Read Error! Not Init\n");
+                return -1;
+            }
+            
+            if (ID < 0 || ID >= m_cachePool->cacheTableIndexArraySize)
+            {
+                RM_CBB_LOG_ERROR("PROQUICKTRANS","key[%02X] ID [%d] Error! maxID [%d]\n", m_key, ID, m_cachePool->cacheTableIndexArraySize);
+            }
+
+            pCacheTable = (CacheTable_t *)((xbyte_t *)m_cachePool  + m_cachePool->cacheTableIndex[ID]);
+
+            if (NULL == readIndex)
+            {
+                RI.index = -1;
+            }
+            else
+            {
+                ::memcpy(&RI, readIndex, sizeof(ProQuickTransReadIndex_t));
+            }
+
+            while(true)
+            {
+                isInvalid = 1;
+                Lock(&pCacheTable->lock);
+                //读索引检测
+                if (RI.index < 0 || RI.index >= pCacheTable->maxCacheSize || RI.ID != ID)
+                {
+                    //索引范围错误
+                    RI.ID = ID;
+                    isInvalid = 0;
+                }
+                
+                //检测校验ID是否合法
+                if (RI.index < pCacheTable->wIndex) 
+                {
+                    if (RI.varifyID != pCacheTable->varifyID)
+                    {
+                        isInvalid = 0;
+                    }
+                }
+                else 
+                {
+                    rIndex = pCacheTable->wIndex;
+                    pNode = (Node_t *)(pCacheTable->ptr + rIndex);
+                    if (RI.index == rIndex)
+                    {
+                        if (RI.varifyID  + 1 != pCacheTable->varifyID && RI.varifyID != pCacheTable->varifyID)
+                        {
+                            //既不是最旧值 也不是最新值
+                            isInvalid = 0;
+                        }
+                    }
+                    else if (RI.index < rIndex + pNode->size + sizeof(Node_t))
+                    {
+                        //处于合并块中 说明已经失效了
+                        isInvalid = 0;
+                    }
+                    else
+                    {
+                        if (RI.varifyID  + 1 != pCacheTable->varifyID)
+                        {
+                            isInvalid = 0;
+                        }
+                    }
+                }
+                
+                if (0 == isInvalid)
+                {
+                    rIndex = pCacheTable->wIndex;
+
+                    RI.index = rIndex;
+                    RI.varifyID = pCacheTable->varifyID - 1;
+                }
+                else
+                {
+                    rIndex = RI.index;
+                }
+
+                pNode = (Node_t *)(pCacheTable->ptr + rIndex);
+                //从当前节点开始找到一个可以读的节点
+                while(true)
+                {
+                    if (pNode->st != NODE_ST_NONE) 
+                    {
+                        break;
+                    }
+
+                    if (rIndex == pCacheTable->wIndex && RI.varifyID == pCacheTable->varifyID)
+                    {
+                        //跳转到最新的节点了
+                        break;
+                    }
+
+                    rIndex = pNode->nextIndex;
+                    pNode = (Node_t *)(pCacheTable->ptr + rIndex);
+                    if (rIndex == 0)
+                    {
+                        RI.varifyID = pCacheTable->varifyID;
+                    }
+                } 
+
+                RI.index = rIndex;
+
+                if (pNode->st == NODE_ST_RR && (RI.index != pCacheTable->wIndex || RI.varifyID != pCacheTable->varifyID))
+                {
+                    //节点状态可读 设置读计数
+                    NRI.index = pNode->nextIndex;
+                    NRI.ID = RI.ID;
+                    if (NRI.index == 0)
+                    {
+                        NRI.varifyID = RI.varifyID + 1;
+                    }
+                    else
+                    {
+                        NRI.varifyID = RI.varifyID;
+                    }
+
+                    __sync_fetch_and_add(&(pNode->rdRecord), 1);
+                    UnLock(&pCacheTable->lock);
+                    break;
+                }
+                UnLock(&pCacheTable->lock);
+
+                //检测节点状态
+                while (true)
+                {
+                    //检测节点是否过期
+                    if (RI.index < pCacheTable->wIndex) 
+                    {
+                        if (RI.varifyID != pCacheTable->varifyID)
+                        {
+                            break; 
+                        }
+
+                        if (pNode->st == NODE_ST_RR || pNode->st == NODE_ST_NONE)
+                        {
+                            //节点可读 或者 节点失效
+                            break;
+                        }
+                    }
+                    else 
+                    {
+                        if (RI.index == pCacheTable->wIndex)
+                        {
+                            if (RI.varifyID != pCacheTable->varifyID && RI.varifyID  + 1 != pCacheTable->varifyID )
+                            {
+                                break;
+                            }
+                        }
+                        else 
+                        {
+                            if (RI.varifyID  + 1 != pCacheTable->varifyID)
+                            {
+                                break; 
+                            }
+
+                            if (pNode->st == NODE_ST_RR || pNode->st == NODE_ST_NONE)
+                            {
+                                //节点可读 或者 节点失效
+                                break;
+                            }
+                        }
+                    }
+ 
+                    if (DoSleep(spinInterval, leftTime) < 0)
+                    {
+                        RM_CBB_LOG_ERROR("PROQUICKTRANS","key[%02X] ID [%d]:: Read MSG Timeout[%d]\n", m_key, ID, timeout);
+                        return -1;
+                    }
+                }
+            }
+            
+            //数据长度
+            if (NULL != outLen)
+            {
+                *outLen = pNode->len;
+            }
+
+            //读取数据
+            if (data != NULL && sizeOfData >= pNode->len) 
+            {
+                ::memcpy(data, pNode->dataPtr, pNode->len);
+                if(NULL != readIndex)
+                {
+                    ::memcpy(readIndex, &NRI, sizeof(ProQuickTransReadIndex_t));
+                }
+            }
+
+            //设置读计数
+            __sync_fetch_and_sub(&(pNode->rdRecord), 1);
+
+            return 0;
+        }
+
+        /**
+         * @brief                   检测节点中的操作是否完成 非进程安全
+         *
+         * @param checkNode         待检测的节点
+         * @param sleepInterval     自旋间隔
+         * @param timeout           超时时间
+         *
+         *
+         * @return >= 0             操作均完成
+         *         <  0             节点操作未完成
+         */
+        inline xint32_t DoNodeCheck(CacheTable_t * pCacheTable, Node_t * checkNode, xint32_t sleepInterval, xint32_t * timeout)
+        {
+            Node_t * nextNode = checkNode;
+            
+            if (NULL == nextNode || NULL == pCacheTable)
+            {
+                return 0;
+            }
+
+            while(checkNode->rdRecord > 0)
+            {
+                if (DoSleep(sleepInterval, timeout) < 0)
+                {
+                    RM_CBB_LOG_ERROR("PROQUICKTRANS"," DoCheck Timeout\n");
+                    return -1;
+                }
+                continue;
+            }
+
+            if (checkNode->nextIndex != checkNode->checkNextIndex)
+            {
+                nextNode = (Node_t *)(pCacheTable->ptr + checkNode->checkNextIndex);
+
+                while (true) 
+                {
+                    if (nextNode->st == NODE_ST_CHECK)
+                    {
+                        DoNodeCheck(pCacheTable, nextNode, sleepInterval, timeout);
+                    }
+
+                    if (nextNode->st == NODE_ST_WW || nextNode->rdRecord > 0)
+                    {
+                        if (DoSleep(sleepInterval, timeout) < 0)
+                        {
+                            RM_CBB_LOG_ERROR("PROQUICKTRANS"," DoCheck Timeout\n");
+                            return -1;
+                        }
+                        continue;
+                    }
+
+                    if (nextNode->nextIndex == checkNode->nextIndex)
+                    {
+                        break;
+                    }
+                    
+                    nextNode = (Node_t *)(pCacheTable->ptr + nextNode->nextIndex);
+                }
+            }
+
+            checkNode->st = NODE_ST_NONE;
+            return 0;
+        }
+
+        /**
          * @brief                   休眠并超时检测
          *
-         * @param times             休眠时间(ms) 0:使用yield切出线程
-         * @param timeout           超时时间(ms) NULL:不做超时检测 非NULL:timeout会递减休眠时间
+         * @param sleepInterval     休眠时间(ms) 0:使用yield切出线程
+         * @param timeout           超时时间(ms) NULL:不做超时检测
          *
          * @return >= 0             未超时
          *                          超时
          */
-        inline xint32_t DoSleep(xint32_t times, xint32_t * timeout)
+        inline xint32_t DoSleep(xint32_t sleepInterval, xint32_t * timeout)
         {
-            if (times > 0)
+            if (sleepInterval > 0)
             {
-                usleep(times * 1000);
+                usleep(sleepInterval * 1000);
                 if(NULL != timeout)
                 {
-                    *timeout -= times;
+                    *timeout -= sleepInterval;
                     return (*timeout);
                 }
                 else
@@ -142,289 +439,6 @@ namespace RM_CODE
         }
 
         
-        xint32_t Read_Order(xint32_t ID, ProQuickTransReadRecord_t * readRecord,  void * readData, xint32_t sizeOfData, xint32_t * outLen, xint32_t timeout, xint32_t spinInterval)
-        {
-            CacheTable_t * pCacheTable = NULL;
-            ProQuickTransReadRecord_t tmpReadRecord = {0};
-            ProQuickTransReadRecord_t nextReadRecord = {0};
-
-            xint32_t * leftTime = NULL;
-            xint32_t wIndex = 0;
-            xint32_t tmpIndex = 0;
-
-            Node_t * pRNode = NULL;
-            Node_t * pWNode = NULL;
-
-            //0 未过期 1 过期
-            xint32_t expiredTag = 0;
-
-            xint32_t breakTag = 0;
-
-            //合法性检测
-            if (NULL == outLen)
-            {
-                RM_CBB_LOG_ERROR("PROQUICKTRANS","Read Error! outLen Param is NULL\n");
-                return -2;
-            }
-        
-
-            if (timeout != 0)
-            {
-                leftTime = &timeout;
-            }
-            
-            if (IsInit() < 0)
-            {
-                RM_CBB_LOG_ERROR("PROQUICKTRANS","Read Error! Not Init\n");
-                return -1;
-            }
-
-
-            if (ID < 0 || ID >= m_cachePool->cacheTableIndexArraySize)
-            {
-                RM_CBB_LOG_ERROR("PROQUICKTRANS","key[%02X] ID [%d] Error! maxID [%d]\n", m_key, ID, m_cachePool->cacheTableIndexArraySize);
-            }
-
-            pCacheTable = (CacheTable_t *)((xbyte_t *)m_cachePool  + m_cachePool->cacheTableIndex[ID]);
-
-
-            //获取读节点 
-            if (readRecord == NULL) 
-            {
-                tmpReadRecord.index = -1;
-                tmpReadRecord.varifyID = 0;
-            }
-            else
-            {
-                ::memcpy(&tmpReadRecord, readRecord, sizeof(ProQuickTransReadRecord_t));
-            }
-
-            while(true)
-            {
-                expiredTag = 0;
-                Lock(&pCacheTable->lock);
-                wIndex = pCacheTable->wIndex;
-                pWNode = (Node_t *)(pCacheTable->ptr + wIndex);
-                if (tmpReadRecord.index < 0 || tmpReadRecord.index > pCacheTable->size - sizeof(Node_t))
-                {
-                    //无效索引 -- 读取旧值即可
-                    expiredTag = 1;
-                }
-                else
-                {
-                    if (tmpReadRecord.index < wIndex)
-                    {
-                        //新一轮
-                        if (pCacheTable->varifyID != tmpReadRecord.varifyID)
-                        {
-                            //节点过期
-                            expiredTag = 1;
-                        }
-                    }
-                    else if (tmpReadRecord.index == wIndex)
-                    {
-                        if (tmpReadRecord.varifyID + 1 == pCacheTable->varifyID)
-                        {
-                            //读取旧数据
-                            if (pWNode->st == NODE_ST_WW)
-                            {
-                                //不可读 则一定为过期数据
-                                expiredTag = 1;
-                            }
-                        }
-                        else if (tmpReadRecord.varifyID == pCacheTable->varifyID)
-                        {
-                            //读取新数据
-                        }
-                        else
-                        {
-                            //节点过期
-                            expiredTag = 1;
-                        }
-                    }
-                    else if (tmpReadRecord.index > wIndex && tmpReadRecord.index < wIndex + pWNode->size + sizeof(Node_t)) 
-                    {
-                        //节点过期 -- 原有节点已经发生合并
-                        expiredTag = 1;
-                    }
-                    else 
-                    {
-                        //旧一轮
-                        if (pCacheTable->varifyID != tmpReadRecord.varifyID + 1)
-                        {
-                            //节点失效
-                            expiredTag = 1;
-                        }
-                    }
-
-
-                    if (1 == expiredTag) 
-                    {
-                        //过期节点 自动调整至最旧的节点
-                        tmpReadRecord.varifyID = pCacheTable->varifyID;
-                        tmpReadRecord.varifyID--;
-                        tmpReadRecord.index = wIndex;
-                    }
-
-
-                    pRNode = (Node_t *)(pCacheTable->ptr + tmpReadRecord.index);
-                    
-                    //找到可读节点
-                    tmpIndex = tmpReadRecord.index;
-                    while(true)
-                    {
-                        if (pRNode->st == NODE_ST_NONE)
-                        {
-                            if (tmpIndex == wIndex && tmpReadRecord.varifyID >= pCacheTable->varifyID)
-                            {
-                                //完成一轮 或 varifyID异常
-                                break;
-                            }
-
-
-                            tmpIndex = pRNode->nextIndex;
-                            tmpReadRecord.index = tmpIndex;
-                            pRNode = (Node_t *)(pCacheTable->ptr + pRNode->nextIndex);
-
-                            if (0 == tmpIndex && tmpReadRecord.varifyID < pCacheTable->varifyID)
-                            {
-                                tmpReadRecord.varifyID++;
-                            }
-
-                        }
-                        else
-                        {
-
-                            break;
-                        }
-                    }
-
-
-                    if (pRNode->st == NODE_ST_RR)
-                    {
-                        //if (tmpReadRecord.index != pCacheTable->wIndex || tmpReadRecord.varifyID != pCacheTable->varifyID)
-                        if ((tmpReadRecord.index < pCacheTable->wIndex && tmpReadRecord.varifyID == pCacheTable->varifyID) || (tmpReadRecord.index >= pCacheTable->wIndex && tmpReadRecord.varifyID + 1 == pCacheTable->varifyID))
-                        {
-                            __sync_fetch_and_add(&(pRNode->rdRecord), 1);
-                            nextReadRecord.index = pRNode->nextIndex;
-                            nextReadRecord.varifyID = tmpReadRecord.varifyID;
-                            if (0 == nextReadRecord.index)
-                            {
-                                nextReadRecord.varifyID++;
-                            }
-
-                            UnLock(&pCacheTable->lock);
-                            break;
-                        }
-
-                    }
-                    
-                }
-                UnLock(&pCacheTable->lock);
-
-
-                //自旋等待节点可读或失效
-                while(true)
-                {
-                    breakTag = 0;
-                    if (tmpReadRecord.index == pCacheTable->wIndex && tmpReadRecord.varifyID == pCacheTable->varifyID)
-                    {
-                        //当前读的节点是最新的数据 等待即可
-                        if (DoSleep(spinInterval, leftTime) < 0)
-                        {
-                            RM_CBB_LOG_ERROR("PROQUICKTRANS","key[%02X] ID [%d]:: Read MSG Timeout[%d]!(wait write finished)\n", m_key, ID, timeout);
-                            *outLen = -1;
-                            return -2;
-                        }
-
-                        continue;
-                    }
-
-                    switch (pRNode->st)
-                    {
-                        case NODE_ST_WW:
-                           //正在写的节点 需要检查节点是否过期
-                            if (tmpReadRecord.index < pCacheTable->wIndex && tmpReadRecord.varifyID != pCacheTable->varifyID)
-                            {
-                                //过期
-                                breakTag = 1;
-                            }
-                            else 
-                            {
-                                //脏读 异常再重试即可
-                                wIndex = pCacheTable->wIndex;
-                                if (wIndex < 0 || wIndex >= pCacheTable->maxCacheSize)
-                                {
-                                    break;
-                                }
-                                pWNode = (Node_t *)(pCacheTable->ptr + wIndex);
-
-                                if (tmpReadRecord.index >= pCacheTable->wIndex && tmpReadRecord.index >= pCacheTable->wIndex + pWNode->size + sizeof(Node_t))
-                                {
-                                    //过期
-                                    breakTag = 1;
-                                }
-                                else if (tmpReadRecord.varifyID + 1 != pCacheTable->varifyID)
-                                {
-                                    //过期
-                                    breakTag = 1;
-                                }
-                            }
-                            break;
-                        case NODE_ST_RR:
-                        case NODE_ST_NONE:
-                        default:
-                            breakTag = 1;
-                            break;
-                    }
-
-                    if (breakTag == 1)
-                    {
-                        break;
-                    }
-
-                    if (DoSleep(spinInterval, leftTime) < 0)
-                    {
-                        RM_CBB_LOG_ERROR("PROQUICKTRANS","key[%02X] ID [%d]:: Read MSG Timeout[%d]!(wait write finished)\n", m_key, ID, timeout);
-                        *outLen = -1;
-                        return -2;
-                    }
-
-                }
-            }
-
-            //读数据
-            *outLen = pRNode->lenOfData;
-            if (pRNode->lenOfData > sizeOfData || NULL == readData) 
-            {
-                RM_CBB_LOG_ERROR("PROQUICKTRANS","key[%02X] ID [%d]:: Data Buffer Not Enough bufferSize [%d] needSize [%d]!\n", m_key, ID, sizeOfData, pRNode->size);
-                return -3;
-            }
-            else
-            {
-                ::memcpy(readRecord, &nextReadRecord, sizeof(ProQuickTransReadRecord_t));
-
-                ::memcpy((xbyte_t *)readData, pRNode->dataPtr, pRNode->lenOfData);
-            }
-
-            __sync_fetch_and_sub(&(pRNode->rdRecord), 1);
-
-
-            return 0;
-
-        }
-
-        xint32_t Read_Newest(xint32_t ID, ProQuickTransReadRecord_t * readRecord,  void * readData, xint32_t sizeOfData, xint32_t * outLen, xint32_t timeout, xint32_t spinInterval)
-        {
-            return 0;
-        }
-
-
-        xint32_t Read_Oldest(xint32_t ID, ProQuickTransReadRecord_t * readRecord,  void * readData, xint32_t sizeOfData, xint32_t * outLen, xint32_t timeout, xint32_t spinInterval)
-        {
-            return 0;
-        }
-
     public:
         ProQuickTrans()
         {
@@ -449,7 +463,7 @@ namespace RM_CODE
          * @return  >= 0            成功 0 创建成功 1 连接成功
          *          <  0            失败 错误码
          */
-        xint32_t Init(key_t key, ProQuickTransCFG_t * cfgArray, xint32_t cfgNum)
+        xint32_t Init(key_t key, ProQuickTransCFG_t * cfgArray = NULL, xint32_t cfgNum = 0)
         {
             xint32_t totalSize;
 
@@ -494,7 +508,10 @@ namespace RM_CODE
             totalSize += sizeof(xint32_t) * (maxID + 1);
             
             //创建共享缓存
-            m_shmID = ::shmget(m_key, totalSize, 0666 | IPC_CREAT | IPC_EXCL);
+            if (NULL != cfgArray && cfgNum > 0)
+            {
+                m_shmID = ::shmget(m_key, totalSize, 0666 | IPC_CREAT | IPC_EXCL);
+            }
 
             if (m_shmID >= 0)
             {
@@ -530,11 +547,15 @@ namespace RM_CODE
                     pthread_mutexattr_init(&table->lockAttr);
                     pthread_mutexattr_setpshared(&table->lockAttr, PTHREAD_PROCESS_SHARED);
                     pthread_mutex_init(&table->lock, &table->lockAttr);
+                    //写锁
+                    pthread_mutexattr_init(&table->wLockAttr);
+                    pthread_mutexattr_setpshared(&table->wLockAttr, PTHREAD_PROCESS_SHARED);
+                    pthread_mutex_init(&table->wLock, &table->wLockAttr);
+ 
                     table->varifyID = 1;
                     table->wIndex = 0;
                     table->size = cfgArray[iLoop].size + sizeof(Node_t);
                     table->maxCacheSize = cfgArray[iLoop].size;
-                    table->writeLock = CACHE_TABLE_WRITE_UNLOCK;
 
                     node->st = NODE_ST_NONE;
                     node->rdRecord = 0;
@@ -550,12 +571,10 @@ namespace RM_CODE
             else
             {
                 //共享缓存已存在 连接共享缓存
-                if ((m_shmID = ::shmget(m_key, 0, 0)) < 0)
-                { 
-                    RM_CBB_LOG_ERROR("PROQUICKTRANS", "key [%02X] (connect) get Failed!\n", m_key);
-                    return -2;
+                if  ((m_shmID = ::shmget(m_key, 0, 0)) < 0)
+                {
+                    RM_CBB_LOG_ERROR("PROQUICKTRANS", "key [%02X] (connect) shmget Failed!\n", m_key);
                 }
-
                 if ((m_cachePool = (CachePool_t *)::shmat(m_shmID, NULL, 0)) == NULL)
                 {
                     RM_CBB_LOG_ERROR("PROQUICKTRANS", "key [%02X] (connect) Connect Failed!\n", m_key);
@@ -644,20 +663,26 @@ namespace RM_CODE
         {
             CacheTable_t * pCacheTable = NULL;
             Node_t * pNode = NULL; 
+
             Node_t * tmpNode = NULL;
 
             xint32_t * leftTime = NULL;
-            xint32_t needLen = 0;
-            xint32_t wIndex = 0;
-            xint32_t nextIndex = 0;
 
-            xint32_t cacheSize = 0;
-            
+            xint32_t needNodeCount = 0;
+
+            xint32_t needLen = 0;
+
+            xint32_t tmpLen = 0;
+
+            xint32_t maxCacheSize = 0;
+
+            xint32_t wIndex = 0;
 
             if (timeout != 0)
             {
                 leftTime = &timeout;
             }
+        
             
             //合法性检测
             if (IsInit() < 0)
@@ -665,14 +690,7 @@ namespace RM_CODE
                 RM_CBB_LOG_ERROR("PROQUICKTRANS","Wrte Error! Not Init\n");
                 return -1;
             }
-
-            if (lenOfData <= 0)
-            {
-                lenOfData = 0;
-            }
-
-            needLen = lenOfData + sizeof(Node_t);
-
+            
             if (ID < 0 || ID >= m_cachePool->cacheTableIndexArraySize)
             {
                 RM_CBB_LOG_ERROR("PROQUICKTRANS","key[%02X] ID [%d] Error! maxID [%d]\n", m_key, ID, m_cachePool->cacheTableIndexArraySize);
@@ -685,218 +703,198 @@ namespace RM_CODE
                 RM_CBB_LOG_ERROR("PROQUICKTRANS","key[%02X] ID [%d]:: MSG Too long ! MSGLen [%d] maxCacheSize [%d]\n", m_key, ID, lenOfData, pCacheTable->maxCacheSize);
             }
 
+            needLen = lenOfData + sizeof(Node_t);
 
-            //获取写节点
+            //获取写
+            Lock(&pCacheTable->wLock);
             while (true)
             {
-                //独占写节点分配操作    
-                if (pCacheTable->writeLock == CACHE_TABLE_WRITE_UNLOCK)
+                wIndex = pCacheTable->wIndex;
+                pNode = (Node_t *)(pCacheTable->ptr + wIndex);
+
+                //占有块 
+                tmpNode = pNode;
+                tmpLen = 0;
+
+                while(true)
                 {
-                    Lock(&pCacheTable->lock);
-                    if (pCacheTable->writeLock == CACHE_TABLE_WRITE_UNLOCK)
+                    if (tmpNode->st == NODE_ST_CHECK)
                     {
-                        pCacheTable->writeLock = CACHE_TABLE_WRITE_LOCK;
-                        UnLock(&pCacheTable->lock);
-                        
-                        //等待写操作完成
-                        wIndex = pCacheTable->wIndex;
-                        pNode = tmpNode = (Node_t *)(pCacheTable->ptr + wIndex);
-                        nextIndex = pNode->nextIndex;
-                        cacheSize = 0;
-
-                        while(true)
+                        //完成上一次写未完成工作
+                        if (DoNodeCheck(pCacheTable, tmpNode,  spinInterval, leftTime) < 0)
                         {
-                            if (tmpNode->st == NODE_ST_WW)
-                            {
-                                if (DoSleep(spinInterval, leftTime) < 0)
-                                {
-                                    //放开申请写节点操作
-                                    pCacheTable->writeLock = CACHE_TABLE_WRITE_UNLOCK;
-                                    RM_CBB_LOG_ERROR("PROQUICKTRANS","key[%02X] ID [%d]:: Write MSG Timeout[%d]!(wait write finished)\n", m_key, ID, timeout);
-                                    return -1;
-                                }
-                                continue;
-                            }
+                            RM_CBB_LOG_ERROR("PROQUICKTRANS","key[%02X] ID [%d] Error! Wait Node Check Timeout\n", m_key, ID);
+                            UnLock(&pCacheTable->wLock);
+                            return -2;
+                        }
+                    }
 
-                            cacheSize += tmpNode->size + sizeof(Node_t);
-                            if (cacheSize >= needLen)
-                            {
-                                //取到足够长的连续空间 更新写节点
-                                Lock(&pCacheTable->lock);
-                                pNode->st = NODE_ST_WW;
-                                pNode->nextIndex = tmpNode->nextIndex;
-                                pNode->size = cacheSize - sizeof(Node_t);
+                    if (tmpNode->st == NODE_ST_WW)
+                    {
+                        if (DoSleep(spinInterval, leftTime) < 0)
+                        {
+                            RM_CBB_LOG_ERROR("PROQUICKTRANS","key[%02X] ID [%d]:: Write MSG Timeout[%d]\n", m_key, ID, timeout);
+                            UnLock(&pCacheTable->wLock);
+                            return -1;
+                        }
+                        //NODE_ST_WW 状态可能转为 NODE_ST_CHECK 所以需要再次检测一遍
+                        continue;
+                    }
 
-                                pCacheTable->wIndex = tmpNode->nextIndex;
-                                tmpNode = (Node_t *)(pCacheTable->ptr + tmpNode->nextIndex);
-                                tmpNode->preIndex = wIndex;
-                                if (pCacheTable->wIndex == 0)
-                                {
-                                    pCacheTable->varifyID++;
-                                }
-                                UnLock(&pCacheTable->lock);
-                                break;
-                            }
-
-                            if (tmpNode->nextIndex == 0)
-                            {
-                                //剩余连续长度不够长 则丢弃该段数据
-                                Lock(&pCacheTable->lock);
-                                pNode->st = NODE_ST_NONE;
-                                pNode->nextIndex = tmpNode->nextIndex;
-                                pNode->size = cacheSize - sizeof(Node_t);
-
-                                pCacheTable->wIndex = tmpNode->nextIndex;
-                                pCacheTable->varifyID++;
-                                tmpNode = (Node_t *)(pCacheTable->ptr + tmpNode->nextIndex);
-                                tmpNode->preIndex = wIndex;
-                                UnLock(&pCacheTable->lock);
-
-                                //从新的连续节点开始继续获取
-                                pNode = tmpNode;
-                                wIndex = 0;
-
-                                nextIndex = pNode->nextIndex;
-                                cacheSize = 0;
-                                continue;
-                            }
-                            
-                            tmpNode = (Node_t *)(pCacheTable->ptr + tmpNode->nextIndex);
+                    tmpLen += tmpNode->size + sizeof(Node_t);
+                    if (needLen <= tmpLen || tmpNode->nextIndex == 0)
+                    {
+                        //达到拼接条件
+                        
+                        //锁住读写操作 块合并
+                        Lock(&pCacheTable->lock);
+                        pNode->st = NODE_ST_WW; 
+                        pNode->size = tmpLen - sizeof(Node_t);
+                        pNode->len = tmpLen - sizeof(Node_t);
+                        pNode->checkNextIndex = pNode->nextIndex;
+                        if (tmpNode->nextIndex != 0)
+                        {
+                            pNode->nextIndex = wIndex + tmpLen;
+                        }
+                        else
+                        {
+                            pNode->nextIndex = 0;
                         }
 
+                        tmpNode = (Node_t *)(pCacheTable->ptr + pNode->nextIndex);
+                        tmpNode->preIndex = wIndex;
+                        pCacheTable->wIndex = pNode->nextIndex;
+                        if (0 == pCacheTable->wIndex)
+                        {
+                            pCacheTable->varifyID++;
+                        }
+                        //合并完成 - 放开读 
+                        UnLock(&pCacheTable->lock);
+                        
+                        //放开写
+                        UnLock(&pCacheTable->wLock);
                         break;
                     }
-                    UnLock(&pCacheTable->lock);
+
+                    tmpNode = (Node_t *)(pCacheTable->ptr +  tmpNode->nextIndex);
                 }
 
-                if (DoSleep(spinInterval, leftTime) < 0)
+                //等待读操作完成 即可写操作
+                while(pNode->rdRecord > 0)
                 {
-
-                    RM_CBB_LOG_ERROR("PROQUICKTRANS","key[%02X] ID [%d]:: Write MSG Timeout[%d]!(wait write operator)\n", m_key, ID, timeout);
-                    return -1;
+                    if ((DoSleep(spinInterval, leftTime)) < 0)
+                    {
+                        RM_CBB_LOG_ERROR("PROQUICKTRANS","key[%02X] ID [%d]:: Write MSG Timeout[%d]\n", m_key, ID, timeout);
+                        //让下次写操作检测即可
+                        pNode->st = NODE_ST_CHECK;
+                        return -1;
+                    }
                 }
 
-            }
-            
-
-            //等待节点内读操作清空 并进行写
-            pCacheTable->writeLock = CACHE_TABLE_WRITE_UNLOCK;
-
-            //if (wIndex == 0)
-            //{
-            //    Lock(&pCacheTable->lock);
-            //    pCacheTable->varifyID++;
-            //    UnLock(&pCacheTable->lock);
-            //}
-
-            
-            //首个节点(首个节点的nextIndex已经修改了，需要单独处理）
-            while(true)
-            {
-                //pNode 等待
-                if (pNode->rdRecord == 0)
+                if (pNode->nextIndex != pNode->checkNextIndex)
                 {
-                    //写已经完成
+                    tmpNode = (Node_t *)(pCacheTable->ptr + pNode->checkNextIndex);
+                    while(true)
+                    {
+                        while (tmpNode->rdRecord > 0)
+                        {
+                            if ((DoSleep(spinInterval, leftTime)) < 0)
+                            {
+                                RM_CBB_LOG_ERROR("PROQUICKTRANS","key[%02X] ID [%d]:: Write MSG Timeout[%d]\n", m_key, ID, timeout);
+                                //让下次写操作检测即可
+                                pNode->st = NODE_ST_CHECK;
+                                return -1;
+                            }
+                        }
 
-                    break;
+                        if (tmpNode->nextIndex == pNode->nextIndex) 
+                        {
+                            break;
+                        }
+
+                        tmpNode = (Node_t *)(pCacheTable->ptr + tmpNode->nextIndex);
+                    }
                 }
 
-                if (DoSleep(spinInterval, leftTime) < 0)
+                
+                //检测占有的块是否能够写下数据
+                if (pNode->size < lenOfData)
                 {
-                    Lock(&pCacheTable->lock);
+                    //长度不够 继续占有块
+                    pNode->len = pNode->size;
                     pNode->st = NODE_ST_NONE;
-                    UnLock(&pCacheTable->lock);
-                    RM_CBB_LOG_ERROR("PROQUICKTRANS","key[%02X] ID [%d]:: wait first Node read finished timeout [%d]!\n", m_key, ID, timeout);
-                    return -1;
-                }
-            }
-            
-            //后续节点
-            tmpNode = (Node_t *)(pCacheTable->ptr + nextIndex);
-            while (nextIndex != pNode->nextIndex)
-            {
-                nextIndex = tmpNode->nextIndex;
-
-                //pNode 等待
-                if (tmpNode->rdRecord == 0)
-                {
-                    //写已经完成
-                    tmpNode = (Node_t *)(pCacheTable->ptr + nextIndex);
                     continue;
                 }
+                
+                //写数据
+                pNode->len = lenOfData;
+                ::memcpy(pNode->dataPtr, data, lenOfData);
 
-                if (DoSleep(spinInterval, leftTime) < 0)
+                //块拆分
+                if (pNode->size - pNode->len > sizeof(Node_t)) 
                 {
+                    Node_t * nextNode = (Node_t *)(pCacheTable->ptr + pNode->nextIndex);
+
+                    tmpNode = (Node_t *)(pCacheTable->ptr + wIndex + sizeof(Node_t) + pNode->len);
+                    tmpNode->preIndex = wIndex;
+                    tmpNode->nextIndex = pNode->nextIndex;
+                    tmpNode->st = NODE_ST_NONE;
+                    tmpNode->size = pNode->size - pNode->len - sizeof(Node_t);
+                    tmpNode->len = tmpNode->size;
+                    tmpNode->checkNextIndex = -1;
+                    tmpNode->rdRecord = 0;
+
                     Lock(&pCacheTable->lock);
-                    pNode->st = NODE_ST_NONE;
+                    pNode->nextIndex = wIndex + sizeof(Node_t) + pNode->len;
+                    pNode->size = pNode->len;
+
+                    nextNode->preIndex = pNode->nextIndex;
                     UnLock(&pCacheTable->lock);
-                    RM_CBB_LOG_ERROR("PROQUICKTRANS","key[%02X] ID [%d]:: wait left Node read finished timeout [%d]!\n", m_key, ID, timeout);
-                    return -1;
+
                 }
+                
+                //设置可读
+                pNode->st = NODE_ST_RR;
+
+                //完成写
+                break;
             }
-
-            //对长节点进行拆分 -- 此处不用加锁
-            if (cacheSize - needLen > sizeof(Node_t))
-            {
-                tmpNode = (Node_t * )((xbyte_t *)pNode + needLen);
-                tmpNode->nextIndex = nextIndex;
-                tmpNode->preIndex = wIndex;
-                tmpNode->st = NODE_ST_NONE;
-                tmpNode->size = cacheSize - needLen - sizeof(Node_t);
-                tmpNode->rdRecord = 0;
-
-                tmpNode = (Node_t * )(pCacheTable->ptr + tmpNode->nextIndex);
-                if (pNode->nextIndex == pNode->preIndex)
-                {
-                    pNode->nextIndex = wIndex + needLen;
-                    pNode->preIndex = wIndex + needLen;
-                }
-                else
-                {
-                    pNode->nextIndex = wIndex + needLen;
-                    Lock(&pCacheTable->lock);
-                    tmpNode->preIndex = wIndex + needLen;
-                    UnLock(&pCacheTable->lock);
-                }
-
-                pNode->size = lenOfData;
-            }
-            else
-            {
-                //pNode->size = cacheSize - sizeof(Node_t);
-            }
-
-            pNode->lenOfData = lenOfData;
-
-
-            //写数据
-            ::memcpy(pNode->dataPtr, data, lenOfData);
-
-            pNode->st = NODE_ST_RR;
-
             return 0;
         }
 
-        
-        xint32_t Read(xint32_t ID, ProQuickTransReadRecord_t * readRecord,  void * readData, xint32_t sizeOfData, xint32_t * outLen, ProQuickTranReadMode_e readMode = PRO_READ_ORDER, xint32_t timeout = 0, xint32_t spinInterval = 1)
+        /**
+         * @brief                       读取数据
+         *
+         * @param ID                    类型ID
+         * @param readIndex             读索引
+         * @param data                  读数据缓存
+         * @param sizeOfData            读数据缓存大小 
+         * @param outLen                数据长度
+         * @param mode                  读数据模式
+         * @param timeout               超时时间 ms
+         * @param spinInterval          自旋间隔 ms
+         *
+         * @return  >= 0                成功
+         *          <  0                失败 
+         */
+        xint32_t Read(xint32_t ID, ProQuickTransReadIndex_t * readIndex, void * data, xint32_t sizeOfData, xint32_t * outLen, ProQuickTransReadMode_e mode = PRO_TRANS_READ_ORDER, xint32_t timeout = 0, xint32_t spinInterval = 1)
         {
-            switch(readMode)
+            switch(mode)
             {
-                case PRO_READ_ORDER:
-                    return Read_Order(ID, readRecord, readData, sizeOfData, outLen, timeout, spinInterval);
-                case PRO_READ_NEWEST_ONLY:
-                    return Read_Newest(ID, readRecord, readData, sizeOfData, outLen, timeout, spinInterval);
-                case PRO_READ_OLDEST_ONLY:
-                    return Read_Oldest(ID, readRecord, readData, sizeOfData, outLen, timeout, spinInterval);
+                case PRO_TRANS_READ_ORDER:
+                    return Read_Order(ID, readIndex, data, sizeOfData, outLen, timeout , spinInterval);
+                case PRO_TRANS_READ_OLDEST:
+                    return Read_Order(ID, readIndex, data, sizeOfData, outLen, timeout , spinInterval);
+                    break;
+                case PRO_TRANS_READ_NEWEST:
+                    return Read_Order(ID, readIndex, data, sizeOfData, outLen, timeout , spinInterval);
+                    break;
                 default:
-                    RM_CBB_LOG_ERROR("PROQUICKTRANS","key[%02X] ID [%d]:: unkonw read mode\n", m_key, ID);
+                    RM_CBB_LOG_ERROR("PROQUICKTRANS","key[%02X] ID [%d] Error! read data Mode Error[%d]\n", m_key, ID, mode);
                     return -1;
             }
-
-            return -1;
+            return 0;
         }
-
-
     };
 }
 #endif
