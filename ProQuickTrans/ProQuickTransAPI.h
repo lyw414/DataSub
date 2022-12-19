@@ -9,19 +9,15 @@
 #include "ProQuickTransDefine.h"
 
 #define PRO_QUICK_TRANS_DEFINE_BEGIN() static const xint32_t g_proQuickTransCFG[] = {
-#define PRO_QUICK_TRANS_DEFINE_DEFINE(key, ID, BlockCount, BlockSize) \
+#define PRO_QUICK_TRANS_DEFINE_DEFINE(key, ID, Size) \
 key,\
 ID,\
-BlockCount,\
-BlockSize,
+Size,
 #define PRO_QUICK_TRANS_DEFINE_END() };
 
 
 
-typedef RM_CODE::ProQuickTransNodeIndex_t ProQuickTransNodeIndex_t;
 
-
-//typedef RM_CODE::ProQuickTrans * ProQuickTransHandle;
 typedef void * ProQuickTransHandle;
 
 //extern "C" {
@@ -54,12 +50,13 @@ typedef void * ProQuickTransHandle;
      * @param[in]id             登记的数据ID
      * @param[in]data           待写入的数据
      * @param[in]lenOfData      待写入的数据长度
-     * @param[in]timeout        超时时间 us
+     * @param[in]timeout        超时时间 ms
+     * @param[in]spinInterval   自旋时间间隔 ms
      *
      * @return  >= 0            成功
      *          <  0            失败 错误码 -1 写超时 -2 数据过大
      */
-    INTERFACE_API xint32_t RM_CBB_ProQuickTransWrite(ProQuickTransHandle h, xint32_t id, xbyte_t * data, xint32_t lenOfData, xint32_t interval = 10000, xint32_t timeout = 0);
+    INTERFACE_API xint32_t RM_CBB_ProQuickTransWrite(ProQuickTransHandle h, xint32_t id, xbyte_t * data, xint32_t lenOfData, xint32_t timeout = 0, xint32_t spinInterval = 10000);
     
     
     /**
@@ -75,7 +72,7 @@ typedef void * ProQuickTransHandle;
      * @return  >= 0            成功
      *          <  0            失败 错误码 -1 超时 -2 缓存池过小
      */
-    INTERFACE_API xint32_t RM_CBB_ProQuickTransRead(ProQuickTransHandle h, ProQuickTransNodeIndex_t * IN, xint32_t id, xbyte_t * data, xint32_t sizeOfData, xint32_t interval = 10000, xint32_t timeout = 0);
+    INTERFACE_API xint32_t RM_CBB_ProQuickTransRead(ProQuickTransHandle h, xint32_t ID, ProQuickTransReadIndex_t * readIndex, void * data, xint32_t sizeOfData, xint32_t * outLen, ProQuickTransReadMode_e mode = PRO_TRANS_READ_ORDER, xint32_t timeout = 0, xint32_t spinInterval = 1);
 
     /**
      * @brief                   获取指定id类型数据的长度大小

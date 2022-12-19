@@ -1,6 +1,5 @@
 #ifndef __RM_CBB_API_PRO_QUICK_TRANS_FILE_HPP__
 #define __RM_CBB_API_PRO_QUICK_TRANS_FILE_HPP__
-
 #include "streamaxcomdev.h" 
 #include "ProQuickTransDefine.h"
 
@@ -17,78 +16,64 @@
 
 #include <map>
 
+#include "streamaxlog.h"
+
 namespace RM_CODE 
 {
     class ProQuickTrans {
-    public:
-        //typedef struct _IndexNode {
-        //    xint32_t index; 
-        //    xint32_t nodeID;
-        //    xint32_t ID;
-        //    //0 顺序读 1 最旧值 2 最新值
-        //    xint32_t mode; 
-        //} IndexNode_t;
-
     private:
-        typedef ProQuickTransNodeIndex_t IndexNode_t;
-        typedef struct _CFG {
-            xint32_t ID; 
-            xint32_t blockCount; 
-            xint32_t blockSize; 
-        } CFG_t;
-
-
         typedef enum _NodeST {
-            NODE_ST_WW,     //待写节点
-            NODE_ST_RR,     //可读节点
-            NODE_ST_F,      //空闲
-            NODE_ST_NONE,   //无状态 标志位占用
+            NODE_ST_WW,     //正在写，禁止读与写，读写均阻塞至该状态
+            NODE_ST_RR,     //读就绪，可读可写
+            NODE_ST_NONE,   //无效，可写不可读，读操作直接跳过该节点
+            NODE_ST_CHECK   //待检测节点 需要检测是否内部节点存待写 读操作 均无之后则可以设置为 NODE_ST_NONE
+
         } NodeST_e;
-
-        typedef struct _NodeInfo {
-            xint32_t blockSize;
-            xint32_t blockCount;
-            xint32_t wIndex;
-        } NodeInfo_t;
-
+        
         typedef struct _Node {
-            xint32_t nodeID;
-            xint32_t rdRecord;
-            NodeST_e st;
-            xint32_t lenOfData;
-            xint32_t block;
-        } Node_t;
+            NodeST_e st;                //节点状态
+            xuint32_t rdRecord;         //读计数
+            xint32_t size;              //不包含Node_t
+            xint32_t len;               //数据长度 
+            xint32_t preIndex;
+            xint32_t nextIndex;
+            xint32_t checkNextIndex;    //缓存块合并nextIndex
 
-        typedef struct _TypeTable {
-            pthread_mutex_t lock;     
-            pthread_mutexattr_t lockAttr;
-            NodeInfo_t nodeInfo;
-            Node_t node[0];
-        } TypeTable_t;
+            xbyte_t dataPtr[0];
+        } Node_t;
         
         typedef struct _CacheTable {
-            int totalSize;              //map的大小
-            int st;                     //map状态 0 未就绪 1 就绪
-            int size;                   //数组typeTable的size
-            //TypeTable_t ** typeTable;   //typeTable 数组
-            int seekIndex[0];
-            
+            pthread_mutex_t lock;           //进程锁
+            pthread_mutexattr_t lockAttr;
+
+            pthread_mutex_t wLock;           //写锁
+            pthread_mutexattr_t wLockAttr;
+
+            xint32_t size;          //CacheTable_t::ptr 的size
+            xint32_t maxCacheSize;  //最大存放数据Size
+            xuint32_t varifyID;     //校验ID
+            xint32_t wIndex;        //写索引
+                                
+            xbyte_t ptr[0];     //Node_t 链表起始地址
         } CacheTable_t;
 
-
+        typedef struct _CachePool {
+            xint32_t totalSize;
+            xint32_t st;
+            xint32_t cacheTableIndexArraySize;
+            xint32_t cacheTableIndex[0];
+        } CachePool_t;
+    
     private:
-        int m_st;
+        pthread_mutex_t m_lock;
 
         key_t m_key;
-
-        std::map<xint32_t, CFG_t> m_cfg;
-
-        pthread_mutex_t m_lock;
         
-        CacheTable_t * m_cacheTable;
+        xint32_t m_st;
 
         xint32_t m_shmID;
 
+        CachePool_t * m_cachePool;
 
     private:
         void Lock(pthread_mutex_t * lock)
@@ -100,624 +85,815 @@ namespace RM_CODE
         {
             ::pthread_mutex_unlock(lock);
         }
-
-        inline xint32_t NextIndex(xint32_t index, xint32_t size)
-        {
-            xint32_t next = index + 1;
-
-            if (next < size)
-            {
-                return next;
-            }
-            else
-            {
-                return 0;
-            }
-        }
-
-        inline xint32_t PreIndex(xint32_t index, xint32_t size)
-        {
-            if (index != 0)
-            {
-                return index - 1;
-            }
-            else
-            {
-                return size -1;
-            }
-        }
-
-
-        xint32_t OrderRead(IndexNode_t * IN, xint32_t ID, xbyte_t * data, xint32_t sizeOfData, xint32_t interval = 10000, xint32_t timeout = 0)
-        {
-            TypeTable_t * typeTable = NULL;
-
-            xint32_t isFirst = 1;
-
-            xint32_t tag = 1;
-
-            xint32_t len = 0;
-
-            xint32_t retryTimes = timeout;
-
-            if (NULL == IN || NULL == m_cacheTable || ID < 0 || ID >= m_cacheTable->size || m_cacheTable->seekIndex[ID] <= 0)
-            {
-                return -2;
-            }
-
-            xint32_t lastIndex = IN->index;
-            xint32_t lastNodeID = IN->nodeID;
-
-            xint32_t index = 0;
-
-            typeTable = (TypeTable_t *)((xbyte_t *)m_cacheTable + m_cacheTable->seekIndex[ID]);
-
-
-            while (tag == 1)
-            {
-                Lock(&(typeTable->lock));
-
-                if (isFirst == 1)
-                {
-                    if (IN->index < 0 || IN->index >= typeTable->nodeInfo.blockCount || IN->nodeID != typeTable->node[IN->index].nodeID)
-                    {
-                        IN->index = NextIndex(typeTable->nodeInfo.wIndex, typeTable->nodeInfo.blockCount);
-                        IN->nodeID = typeTable->node[IN->index].nodeID;
-                    }
-                    else
-                    {
-
-                        IN->index = NextIndex(IN->index, typeTable->nodeInfo.blockCount);
-                        IN->nodeID = typeTable->node[IN->index].nodeID;
-                    }
-                    isFirst = 0;
-                }
-                else if (IN->nodeID != typeTable->node[IN->index].nodeID)
-                {
-
-                    IN->index = NextIndex(typeTable->nodeInfo.wIndex, typeTable->nodeInfo.blockCount);
-                    IN->nodeID = typeTable->node[IN->index].nodeID;
-                }
-
-
-
-                if (typeTable->node[IN->index].st == NODE_ST_RR)
-                {
-                    __sync_fetch_and_add(&(typeTable->node[IN->index].rdRecord), 1);
-                    //typeTable->node[IN->index].rdRecord++;
-                    len = typeTable->node[IN->index].lenOfData;
-                    tag = 0;
-                }
-                else if (typeTable->node[IN->index].st == NODE_ST_F)
-                {
-                    IN->index = 0;
-                    IN->nodeID = typeTable->node[IN->index].nodeID;
-                }
-
-                index = IN->index;
-
-                UnLock(&(typeTable->lock));
-                while(tag == 1)
-                {
-                    if (typeTable->node[index].st == NODE_ST_RR)
-                    {
-                        break;
-                    }
-
-                    if (interval > 0)
-                    {
-                        ::usleep(interval);
-                    }
-                    else
-                    {
-                        ::sched_yield();
-                    }
-
-                    if (timeout > 0 && (retryTimes -= interval) <= 0)
-                    {
-
-                        IN->index = lastIndex;
-                        IN->nodeID = lastNodeID;
-
-                        return -2;
-                    }
-
-                }
-            }
-
-            if (sizeOfData >= typeTable->node[index].lenOfData)
-            {
-                ::memcpy(data, (xbyte_t *)m_cacheTable + typeTable->node[index].block,  typeTable->node[index].lenOfData);
-            }
-            else
-            {
-
-                IN->index = lastIndex;
-                IN->nodeID = lastNodeID;
-                len = -4;
-            }
-            __sync_fetch_and_sub(&(typeTable->node[index].rdRecord), 1);
-
-
-            return len;
-        }
-
-        xint32_t ReadLast(IndexNode_t * IN, xint32_t ID, xbyte_t * data, xint32_t sizeOfData, xint32_t interval = 10000, xint32_t timeout = 0)
-        {
-            TypeTable_t * typeTable = NULL;
-
-            xint32_t isFirst = 1;
-
-            xint32_t tag = 1;
-
-            xint32_t len = 0;
-
-            xint32_t retryTimes = timeout;
-
-            if (NULL == IN || NULL == m_cacheTable || ID < 0 || ID >= m_cacheTable->size || m_cacheTable->seekIndex[ID] <= 0)
-            {
-                return -2;
-            }
-
-            typeTable = (TypeTable_t *)((xbyte_t *)m_cacheTable + m_cacheTable->seekIndex[ID]);
-
-
-            while (tag == 1)
-            {
-                Lock(&(typeTable->lock));
-
-                if (isFirst == 1)
-                {
-                    IN->index = NextIndex(typeTable->nodeInfo.wIndex, typeTable->nodeInfo.blockCount);
-                    IN->nodeID = typeTable->node[IN->index].nodeID;
-                    isFirst = 0;
-                }
-                else if (IN->nodeID != typeTable->node[IN->index].nodeID)
-                {
-                    IN->index = NextIndex(typeTable->nodeInfo.wIndex, typeTable->nodeInfo.blockCount);
-                    IN->nodeID = typeTable->node[IN->index].nodeID;
-                }
-
-                if (typeTable->node[IN->index].st == NODE_ST_RR)
-                {
-                    __sync_fetch_and_add(&(typeTable->node[IN->index].rdRecord), 1);
-                    len = typeTable->node[IN->index].lenOfData;
-                    tag = 0;
-                }
-                else if (typeTable->node[IN->index].st == NODE_ST_F)
-                {
-                    IN->index = 0;
-                    IN->nodeID = typeTable->node[IN->index].nodeID;
-                }
-                UnLock(&(typeTable->lock));
-
-                while(tag == 1)
-                {
-                    if (typeTable->node[IN->index].st == NODE_ST_RR)
-                    {
-                        break;
-                    }
-
-                    ::usleep(interval);
-
-                    if ( timeout > 0 && (retryTimes -= interval ) <= 0)
-                    {
-                        return -2;
-                    }
-                }
-            }
-
-            if (sizeOfData >= typeTable->node[IN->index].lenOfData)
-            {
-                ::memcpy(data, (xbyte_t *)m_cacheTable + typeTable->node[IN->index].block,  typeTable->node[IN->index].lenOfData);
-            }
-            else
-            {
-                len = -4;
-            }
-
-            __sync_fetch_and_sub(&(typeTable->node[IN->index].rdRecord), 1);
-            return len;
-        }
-
-        xint32_t ReadCurrent(IndexNode_t * IN, xint32_t ID, xbyte_t * data, xint32_t sizeOfData, xint32_t interval = 10000, xint32_t timeout = 0)
-        {
-
-            TypeTable_t * typeTable = NULL;
-
-            xint32_t isFirst = 1;
-
-            xint32_t tag = 1;
-
-            xint32_t len = 0;
-
-            xint32_t retryTimes = timeout;
-
-            if (NULL == IN || NULL == m_cacheTable || ID < 0 || ID >= m_cacheTable->size || m_cacheTable->seekIndex[ID] <= 0)
-            {
-                return -2;
-            }
-
-            typeTable = (TypeTable_t *)((xbyte_t *)m_cacheTable + m_cacheTable->seekIndex[ID]);
-
-            while (tag == 1)
-            {
-                Lock(&(typeTable->lock));
-
-                if (isFirst == 1)
-                {
-                    IN->index = PreIndex(typeTable->nodeInfo.wIndex, typeTable->nodeInfo.blockCount);
-                    IN->nodeID = typeTable->node[IN->index].nodeID;
-                    isFirst = 0;
-                }
-                else if (IN->nodeID != typeTable->node[IN->index].nodeID)
-                {
-
-                    IN->index = PreIndex(typeTable->nodeInfo.wIndex, typeTable->nodeInfo.blockCount);
-                    IN->nodeID = typeTable->node[IN->index].nodeID;
-                }
-
-                if (typeTable->node[IN->index].st == NODE_ST_RR)
-                {
-                    __sync_fetch_and_add(&(typeTable->node[IN->index].rdRecord), 1);
-                    len = typeTable->node[IN->index].lenOfData;
-                    tag = 0;
-                }
-                else if (typeTable->node[IN->index].st == NODE_ST_F)
-                {
-                    IN->index = 0;
-                    IN->nodeID = typeTable->node[IN->index].nodeID;
-                }
-                UnLock(&(typeTable->lock));
-
-                while(tag == 1)
-                {
-                    if (typeTable->node[IN->index].st == NODE_ST_RR)
-                    {
-                        break;
-                    }
-
-                    if (timeout > 0 && (retryTimes -= interval) <= 0)
-                    {
-                        return -2;
-                    }
-                }
-            }
-
-            if (sizeOfData >= typeTable->node[IN->index].lenOfData)
-            {
-                ::memcpy(data, (xbyte_t *)m_cacheTable + typeTable->node[IN->index].block,  typeTable->node[IN->index].lenOfData);
-            }
-            else
-            {
-                len = -4;
-            }
-
-            __sync_fetch_and_sub(&(typeTable->node[IN->index].rdRecord), 1);
-
-            return len;
-        }
-
-    public:
-        ProQuickTrans()
-        {
-            m_st = 0;
-            m_shmID = -1;
-            m_cacheTable = NULL;
-            m_key = 0x00;
-            pthread_mutex_init(&m_lock, NULL);
-        }
-
+        
         /**
-         * @brief                   登记配置
+         * @brief               检测是否完成初始
          *
-         * @param[in]ID             类型ID 建议值0开始累加且连续
-         * @param[in]blockCount     缓存记录数条数
-         * @param[in]blockSize      记录的大小
-         *
-         * @return  >= 0            成功 1 重读覆盖记录
-         *          <  0            失败
+         * @return  >= 0        成功
+         *          <  0        失败
          */
-        xint32_t AddCFG(xint32_t ID, xint32_t blockCount, xint32_t blockSize)
+        xint32_t IsInit()
         {
-            CFG_t cfg = {0};
-
-            if (ID < 0 || blockCount <= 0 || blockSize < 0)
+            if (m_st != 1 || NULL == m_cachePool)
             {
                 return -1;
             }
             
-            cfg.ID = ID;
-            cfg.blockCount = blockCount + 1;
-            cfg.blockSize = blockSize;
-            ::pthread_mutex_lock(&m_lock);
-            m_cfg[ID] = cfg;
-            ::pthread_mutex_unlock(&m_lock);
+            return 0;
+        }
+
+        /**
+         * @brief                       读取数据
+         *
+         * @param ID                    类型ID
+         * @param readIndex             读索引
+         * @param data                  读数据缓存
+         * @param sizeOfData            读数据缓存大小 
+         * @param outLen                数据长度
+         * @param timeout               超时时间 ms
+         * @param spinInterval          自旋间隔 ms
+         *
+         * @return  >= 0                成功
+         *          <  0                失败 
+         */
+        xint32_t Read_Order(xint32_t ID, ProQuickTransReadIndex_t * readIndex, void * data, xint32_t sizeOfData, xint32_t * outLen,  xint32_t timeout, xint32_t spinInterval)
+        {
+            CacheTable_t * pCacheTable = NULL;
+            
+            Node_t * pNode = NULL;
+
+            xint32_t rIndex = 0;
+
+            ProQuickTransReadIndex_t RI;
+
+            ProQuickTransReadIndex_t NRI;
+
+            xint32_t * leftTime = NULL;
+            
+            //0 过期索引 1 有效索引
+            xint32_t isInvalid = 0;
+
+            if (timeout != 0)
+            {
+                leftTime = &timeout;
+            }
+ 
+            //合法性检测
+            if (IsInit() < 0)
+            {
+                RM_CBB_LOG_ERROR("PROQUICKTRANS","Read Error! Not Init\n");
+                return -1;
+            }
+            
+            if (ID < 0 || ID >= m_cachePool->cacheTableIndexArraySize)
+            {
+                RM_CBB_LOG_ERROR("PROQUICKTRANS","key[%02X] ID [%d] Error! maxID [%d]\n", m_key, ID, m_cachePool->cacheTableIndexArraySize);
+            }
+
+            pCacheTable = (CacheTable_t *)((xbyte_t *)m_cachePool  + m_cachePool->cacheTableIndex[ID]);
+
+            if (NULL == readIndex)
+            {
+                RI.index = -1;
+            }
+            else
+            {
+                ::memcpy(&RI, readIndex, sizeof(ProQuickTransReadIndex_t));
+            }
+
+            while(true)
+            {
+                isInvalid = 1;
+                Lock(&pCacheTable->lock);
+                //读索引检测
+                if (RI.index < 0 || RI.index >= pCacheTable->maxCacheSize || RI.ID != ID)
+                {
+                    //索引范围错误
+                    RI.ID = ID;
+                    isInvalid = 0;
+                }
+                
+                //检测校验ID是否合法
+                if (RI.index < pCacheTable->wIndex) 
+                {
+                    if (RI.varifyID != pCacheTable->varifyID)
+                    {
+                        isInvalid = 0;
+                    }
+                }
+                else 
+                {
+                    rIndex = pCacheTable->wIndex;
+                    pNode = (Node_t *)(pCacheTable->ptr + rIndex);
+                    if (RI.index == rIndex)
+                    {
+                        if (RI.varifyID  + 1 != pCacheTable->varifyID && RI.varifyID != pCacheTable->varifyID)
+                        {
+                            //既不是最旧值 也不是最新值
+                            isInvalid = 0;
+                        }
+                    }
+                    else if (RI.index < rIndex + pNode->size + sizeof(Node_t))
+                    {
+                        //处于合并块中 说明已经失效了
+                        isInvalid = 0;
+                    }
+                    else
+                    {
+                        if (RI.varifyID  + 1 != pCacheTable->varifyID)
+                        {
+                            isInvalid = 0;
+                        }
+                    }
+                }
+                
+                if (0 == isInvalid)
+                {
+                    rIndex = pCacheTable->wIndex;
+
+                    RI.index = rIndex;
+                    RI.varifyID = pCacheTable->varifyID - 1;
+                }
+                else
+                {
+                    rIndex = RI.index;
+                }
+
+                pNode = (Node_t *)(pCacheTable->ptr + rIndex);
+                //从当前节点开始找到一个可以读的节点
+                while(true)
+                {
+                    if (pNode->st != NODE_ST_NONE) 
+                    {
+                        break;
+                    }
+
+                    if (rIndex == pCacheTable->wIndex && RI.varifyID == pCacheTable->varifyID)
+                    {
+                        //跳转到最新的节点了
+                        break;
+                    }
+
+                    rIndex = pNode->nextIndex;
+                    pNode = (Node_t *)(pCacheTable->ptr + rIndex);
+                    if (rIndex == 0)
+                    {
+                        RI.varifyID = pCacheTable->varifyID;
+                    }
+                } 
+
+                RI.index = rIndex;
+
+                if (pNode->st == NODE_ST_RR && (RI.index != pCacheTable->wIndex || RI.varifyID != pCacheTable->varifyID))
+                {
+                    //节点状态可读 设置读计数
+                    NRI.index = pNode->nextIndex;
+                    NRI.ID = RI.ID;
+                    if (NRI.index == 0)
+                    {
+                        NRI.varifyID = RI.varifyID + 1;
+                    }
+                    else
+                    {
+                        NRI.varifyID = RI.varifyID;
+                    }
+
+                    __sync_fetch_and_add(&(pNode->rdRecord), 1);
+                    UnLock(&pCacheTable->lock);
+                    break;
+                }
+                UnLock(&pCacheTable->lock);
+
+                //检测节点状态
+                while (true)
+                {
+                    //检测节点是否过期
+                    if (RI.index < pCacheTable->wIndex) 
+                    {
+                        if (RI.varifyID != pCacheTable->varifyID)
+                        {
+                            break; 
+                        }
+
+                        if (pNode->st == NODE_ST_RR || pNode->st == NODE_ST_NONE)
+                        {
+                            //节点可读 或者 节点失效
+                            break;
+                        }
+                    }
+                    else 
+                    {
+                        if (RI.index == pCacheTable->wIndex)
+                        {
+                            if (RI.varifyID != pCacheTable->varifyID && RI.varifyID  + 1 != pCacheTable->varifyID )
+                            {
+                                break;
+                            }
+                        }
+                        else 
+                        {
+                            if (RI.varifyID  + 1 != pCacheTable->varifyID)
+                            {
+                                break; 
+                            }
+
+                            if (pNode->st == NODE_ST_RR || pNode->st == NODE_ST_NONE)
+                            {
+                                //节点可读 或者 节点失效
+                                break;
+                            }
+                        }
+                    }
+ 
+                    if (DoSleep(spinInterval, leftTime) < 0)
+                    {
+                        RM_CBB_LOG_ERROR("PROQUICKTRANS","key[%02X] ID [%d]:: Read MSG Timeout[%d]\n", m_key, ID, timeout);
+                        return -1;
+                    }
+                }
+            }
+            
+            //数据长度
+            if (NULL != outLen)
+            {
+                *outLen = pNode->len;
+            }
+
+            //读取数据
+            if (data != NULL && sizeOfData >= pNode->len) 
+            {
+                ::memcpy(data, pNode->dataPtr, pNode->len);
+                if(NULL != readIndex)
+                {
+                    ::memcpy(readIndex, &NRI, sizeof(ProQuickTransReadIndex_t));
+                }
+            }
+
+            //设置读计数
+            __sync_fetch_and_sub(&(pNode->rdRecord), 1);
 
             return 0;
         }
 
+        /**
+         * @brief                   检测节点中的操作是否完成 非进程安全
+         *
+         * @param checkNode         待检测的节点
+         * @param sleepInterval     自旋间隔
+         * @param timeout           超时时间
+         *
+         *
+         * @return >= 0             操作均完成
+         *         <  0             节点操作未完成
+         */
+        inline xint32_t DoNodeCheck(CacheTable_t * pCacheTable, Node_t * checkNode, xint32_t sleepInterval, xint32_t * timeout)
+        {
+            Node_t * nextNode = checkNode;
+            
+            if (NULL == nextNode || NULL == pCacheTable)
+            {
+                return 0;
+            }
 
-        xint32_t Init(key_t key)
+            while(checkNode->rdRecord > 0)
+            {
+                if (DoSleep(sleepInterval, timeout) < 0)
+                {
+                    RM_CBB_LOG_ERROR("PROQUICKTRANS"," DoCheck Timeout\n");
+                    return -1;
+                }
+                continue;
+            }
+
+            if (checkNode->nextIndex != checkNode->checkNextIndex)
+            {
+                nextNode = (Node_t *)(pCacheTable->ptr + checkNode->checkNextIndex);
+
+                while (true) 
+                {
+                    if (nextNode->st == NODE_ST_CHECK)
+                    {
+                        DoNodeCheck(pCacheTable, nextNode, sleepInterval, timeout);
+                    }
+
+                    if (nextNode->st == NODE_ST_WW || nextNode->rdRecord > 0)
+                    {
+                        if (DoSleep(sleepInterval, timeout) < 0)
+                        {
+                            RM_CBB_LOG_ERROR("PROQUICKTRANS"," DoCheck Timeout\n");
+                            return -1;
+                        }
+                        continue;
+                    }
+
+                    if (nextNode->nextIndex == checkNode->nextIndex)
+                    {
+                        break;
+                    }
+                    
+                    nextNode = (Node_t *)(pCacheTable->ptr + nextNode->nextIndex);
+                }
+            }
+
+            checkNode->st = NODE_ST_NONE;
+            return 0;
+        }
+
+        /**
+         * @brief                   休眠并超时检测
+         *
+         * @param sleepInterval     休眠时间(ms) 0:使用yield切出线程
+         * @param timeout           超时时间(ms) NULL:不做超时检测
+         *
+         * @return >= 0             未超时
+         *                          超时
+         */
+        inline xint32_t DoSleep(xint32_t sleepInterval, xint32_t * timeout)
+        {
+            if (sleepInterval > 0)
+            {
+                usleep(sleepInterval * 1000);
+                if(NULL != timeout)
+                {
+                    *timeout -= sleepInterval;
+                    return (*timeout);
+                }
+                else
+                {
+                    return 0;
+                }
+            }
+            else
+            {
+                ::sched_yield();
+                if(NULL != timeout)
+                {
+                    *timeout -= 1;
+                    return (*timeout);
+                }
+                else
+                {
+                    return 0;
+                }
+            }
+        }
+
+        
+    public:
+        ProQuickTrans()
+        {
+            m_key = -1;
+            ::pthread_mutex_init(&m_lock, NULL);
+            m_st = 0;
+            m_shmID = -1;
+            m_cachePool = NULL;
+        }
+
+        ~ProQuickTrans()
+        {
+        }
+
+        /**
+         * @brief   初始化
+         *
+         * @param key               共享缓存键值
+         * @param cfgArray          创建配置 - 若共享缓存键值已创建则该配置不会生效
+         * @param cfgNum            配置记录条数
+         *
+         * @return  >= 0            成功 0 创建成功 1 连接成功
+         *          <  0            失败 错误码
+         */
+        xint32_t Init(key_t key, ProQuickTransCFG_t * cfgArray = NULL, xint32_t cfgNum = 0)
         {
             xint32_t totalSize;
 
             xint32_t retryTimes = 5;
-
+            
             xint32_t maxID = -1;
 
-            xbyte_t * ptr = NULL;
+            xint32_t index = 0;
 
-            TypeTable_t * typeTable = NULL;
-
-            std::map<xint32_t, CFG_t> tmpCFG;
-
-            std::map<xint32_t, CFG_t>::iterator it;
-
-            if (m_st == 1)
-            {
-                return 0;
-            }
-            
-            m_key = key;
+            //状态检测
             ::pthread_mutex_lock(&m_lock);
-            tmpCFG = m_cfg;
+            if (1 == m_st)
+            {
+                ::pthread_mutex_unlock(&m_lock);
+                return -1;
+            }
             ::pthread_mutex_unlock(&m_lock);
 
-            totalSize = sizeof(CacheTable_t);
+            m_st = 1;
 
-            for (it = tmpCFG.begin(); it != tmpCFG.end(); it++)
+            m_key = key;
+
+            RM_CBB_LOG_WARNING("PROQUICKTRANS","ProQuickTrans Init key[%02X] begin ......\n", m_key);
+
+            
+            //统计需要申请的空间大小
+            totalSize = sizeof(CachePool_t);
+            if (NULL != cfgArray && cfgNum > 0)
             {
-                if (it->first > maxID)
+                for (xint32_t iLoop = 0; iLoop < cfgNum; iLoop++)
                 {
-                    maxID = it->first;
+                    if (maxID < cfgArray[iLoop].id)
+                    {
+                        maxID = cfgArray[iLoop].id;
+                    }
+                    totalSize += sizeof(CacheTable_t);
+                    totalSize += sizeof(Node_t); //初始至少包含一个节点
+                    totalSize += cfgArray[iLoop].size;
                 }
-
-                totalSize += sizeof(TypeTable_t);
-                totalSize += sizeof(Node_t) * it->second.blockCount;
-                totalSize += it->second.blockCount * it->second.blockSize;
             }
 
-            totalSize += (maxID + 1) * sizeof(TypeTable_t *);
+            totalSize += sizeof(xint32_t) * (maxID + 1);
             
             //创建共享缓存
-            m_shmID = ::shmget(m_key, totalSize, 0666 | IPC_CREAT | IPC_EXCL);
+            if (NULL != cfgArray && cfgNum > 0)
+            {
+                m_shmID = ::shmget(m_key, totalSize, 0666 | IPC_CREAT | IPC_EXCL);
+            }
+
             if (m_shmID >= 0)
             {
-                //创建成功 初始化
-                if ((m_cacheTable = (CacheTable_t *)::shmat(m_shmID, NULL, 0)) == NULL)
+                //共享缓存不存在 创建成功 连接并初始化共享缓存
+                if ((m_cachePool = (CachePool_t *)::shmat(m_shmID, NULL, 0)) == NULL)
                 {
-                    printf("(Create Shm) shmat failed!%d\n", errno);
-                    return -2;
-                }
-                
-                ::memset(m_cacheTable, 0x00, totalSize);
-
-                ptr = (xbyte_t *)m_cacheTable;
-
-                m_cacheTable->st = 0;
-                m_cacheTable->totalSize = totalSize;
-                m_cacheTable->size = maxID + 1;
-
-                ptr += sizeof(CacheTable_t);
-
-                //m_cacheTable->seekIndex = (int *)ptr;
-
-                ptr += (maxID + 1) * sizeof(int);
-
-
-                for (it = tmpCFG.begin(); it != tmpCFG.end(); it++ )
-                {
-                    typeTable = (TypeTable_t *)ptr;
-                    //m_cacheTable->typeTable[it->first] = typeTable;
-                    m_cacheTable->seekIndex[it->first] = (int)(ptr - (xbyte_t *)m_cacheTable);
-                    //进程锁初始化
-                    pthread_mutexattr_init(&typeTable->lockAttr);
-
-                    pthread_mutexattr_setpshared(&typeTable->lockAttr, PTHREAD_PROCESS_SHARED);
-
-                    pthread_mutex_init(&typeTable->lock, &typeTable->lockAttr);
- 
-                    typeTable->nodeInfo.blockSize = it->second.blockSize;
-                    typeTable->nodeInfo.blockCount = it->second.blockCount;
-                    typeTable->nodeInfo.wIndex = 0;
-
-                    ptr += sizeof(TypeTable_t);
-
-
-                    ptr += it->second.blockCount * sizeof(Node_t);
-
-
-                    for (xint32_t iLoop = 0; iLoop < it->second.blockCount; iLoop++)
-                    {
-                        typeTable->node[iLoop].st = NODE_ST_F;
-                        typeTable->node[iLoop].rdRecord = 0;
-                        typeTable->node[iLoop].nodeID = iLoop + 1;
-                        typeTable->node[iLoop].block = (xint32_t)(ptr + iLoop * it->second.blockSize - (xbyte_t *)m_cacheTable);
-                    }
-
-
-                    ptr += it->second.blockCount * it->second.blockSize;
-                }
-                
-                //就绪
-                m_cacheTable->st = 1;
-            }
-            else
-            {
-                //创建失败 连接共享缓存 等待共享内存就绪
-                if ((m_shmID = ::shmget(m_key, 0, 0)) < 0)
-                {
-                    printf("(Exist shm) ShmGet Failed! %d\n", errno);
-                    return -3;
-                }
-
-                if ((m_cacheTable = (CacheTable_t *)::shmat(m_shmID, NULL, 0)) == NULL)
-                {
-                    printf("(Exist shm) Shmat Failed! %d\n", errno);
-                    return -3;
-                }
-
-                while (retryTimes > 0)
-                {
-                    if (m_cacheTable->st == 1)
-                    {
-                        break; 
-                    }
-                    ::usleep(500000);
-                    retryTimes--;
-                    
-                }
-
-                if (retryTimes <= 0)
-                {
-                    printf("Shm Not Ready! Timeout!\n");
+                    RM_CBB_LOG_ERROR("PROQUICKTRANS", "key [%02X] (create) Connect Failed!\n", m_key);
                     m_st = 0;
                     return -2;
                 }
-            }
 
-            return 0; 
-        }
-        
-        void UnInit()
-        {
-            ::pthread_mutex_lock(&m_lock);
-            m_st = 0;
-            if (m_cacheTable != NULL)
-            {
-                ::shmdt(m_cacheTable);
-                m_cacheTable = NULL;
-            }
-            ::pthread_mutex_unlock(&m_lock);
-        }
+                //初始化
+                ::memset(m_cachePool, 0x00, totalSize);
 
+                m_cachePool->cacheTableIndexArraySize = maxID + 1;
 
-        xint32_t DataSize(xint32_t ID)
-        {
-            if (m_cacheTable == NULL || ID < 0 || ID >= m_cacheTable->size || m_cacheTable->seekIndex[ID] <= 0)
-            {
-                return -1;
-            }
+                m_cachePool->totalSize = totalSize;
 
-            TypeTable_t * typeTable = (TypeTable_t *)((xbyte_t *)m_cacheTable + m_cacheTable->seekIndex[ID]);
-            
-            return typeTable->nodeInfo.blockSize;
-        }
+                index = sizeof(CachePool_t) + sizeof(xint32_t) * (maxID + 1);
 
-        xint32_t Write(xint32_t ID, xbyte_t * data, xint32_t lenOfData, xint32_t interval = 10000, xint32_t timeout = 0)
-        {
-            TypeTable_t * typeTable = NULL;
-
-            xint32_t retryTimes = timeout;
-
-            xint32_t index = -1;
-
-            xint32_t next = 0;
-
-            NodeST_e st;
-
-            if (m_cacheTable == NULL || ID < 0 || ID >= m_cacheTable->size || m_cacheTable->seekIndex[ID] <= 0)
-            {
-                return -1;
-            }
-            
-            typeTable = (TypeTable_t *)((xbyte_t *)m_cacheTable + m_cacheTable->seekIndex[ID]);
-
-            if (lenOfData > typeTable->nodeInfo.blockSize)
-            {
-                return -2;
-            }
-
-            index = -1;
-
-            while (true)
-            {
-
-                index = typeTable->nodeInfo.wIndex;
-                if (index < 0 || index >= typeTable->nodeInfo.blockSize || typeTable->node[index].st == NODE_ST_WW)
+                for (xint32_t iLoop = 0; iLoop < cfgNum; iLoop++)
                 {
-                    if (interval > 0)
-                    {
-                        ::usleep(interval);
-                    }
-                    else
-                    {
-                        ::sched_yield();
-                    }
-                    if (timeout < 0 && (retryTimes -= (interval + 1)) == 0)
-                    {
-                        return -2;
-                    }
-                    continue;
-                }
+                    CacheTable_t * table = NULL;
+                    Node_t * node = NULL;
 
-                //检测状态正常后进行锁 -- 减少锁的次数
-                Lock(&typeTable->lock);
-                if (typeTable->node[typeTable->nodeInfo.wIndex].st != NODE_ST_WW)
-                {
-                    st = typeTable->node[typeTable->nodeInfo.wIndex].st;
-                    typeTable->node[typeTable->nodeInfo.wIndex].st = NODE_ST_WW;
+                    m_cachePool->cacheTableIndex[cfgArray[iLoop].id] = index;
+                    table = (CacheTable_t *)((xbyte_t *)m_cachePool + index);
+                    node = (Node_t *)(table->ptr);
 
-                    index = typeTable->nodeInfo.wIndex;
-                    typeTable->nodeInfo.wIndex = NextIndex(typeTable->nodeInfo.wIndex, typeTable->nodeInfo.blockCount);
+                    index += sizeof(CacheTable_t) + sizeof(Node_t) + cfgArray[iLoop].size;
 
-                    typeTable->node[typeTable->nodeInfo.wIndex].st = NODE_ST_NONE;
-                    typeTable->node[typeTable->nodeInfo.wIndex].nodeID++;
-                    UnLock(&typeTable->lock);
-                    break;
-                }
-                UnLock(&typeTable->lock);
-            }     
-
-            while (typeTable->node[index].rdRecord > 0)
-            {
-                //::sched_yield();
-                usleep(0);
+                    //进程锁 
+                    pthread_mutexattr_init(&table->lockAttr);
+                    pthread_mutexattr_setpshared(&table->lockAttr, PTHREAD_PROCESS_SHARED);
+                    pthread_mutex_init(&table->lock, &table->lockAttr);
+                    //写锁
+                    pthread_mutexattr_init(&table->wLockAttr);
+                    pthread_mutexattr_setpshared(&table->wLockAttr, PTHREAD_PROCESS_SHARED);
+                    pthread_mutex_init(&table->wLock, &table->wLockAttr);
  
-                if ((--retryTimes) == 0)
+                    table->varifyID = 1;
+                    table->wIndex = 0;
+                    table->size = cfgArray[iLoop].size + sizeof(Node_t);
+                    table->maxCacheSize = cfgArray[iLoop].size;
+
+                    node->st = NODE_ST_NONE;
+                    node->rdRecord = 0;
+                    node->size = cfgArray[iLoop].size;
+                    node->preIndex = 0;
+                    node->nextIndex = 0;
+                }
+
+                m_cachePool->st = 1;
+
+                RM_CBB_LOG_WARNING("PROQUICKTRANS","ProQuickTrans Init key[%02X] (create) Success\n", m_key);
+            }
+            else
+            {
+                //共享缓存已存在 连接共享缓存
+                if  ((m_shmID = ::shmget(m_key, 0, 0)) < 0)
                 {
-                    //恢复状态
-                    typeTable->node[index].st = st;
+                    RM_CBB_LOG_ERROR("PROQUICKTRANS", "key [%02X] (connect) shmget Failed!\n", m_key);
+                }
+                if ((m_cachePool = (CachePool_t *)::shmat(m_shmID, NULL, 0)) == NULL)
+                {
+                    RM_CBB_LOG_ERROR("PROQUICKTRANS", "key [%02X] (connect) Connect Failed!\n", m_key);
+                    m_st = 0;
                     return -2;
                 }
+
+                //等待资源就绪
+                while (true) 
+                {
+                    if (1 == m_cachePool->st)
+                    {
+                        break;
+                    }
+                    retryTimes--;
+                    
+                    if (retryTimes <= 0)
+                    {
+                        RM_CBB_LOG_ERROR("PROQUICKTRANS", "key [%02X] (connect) wait shm ready timeout!\n", m_key);
+                        m_st = 0;
+                        return -3;
+                    }
+                    ::usleep(500000);
+                }
+
+                RM_CBB_LOG_WARNING("PROQUICKTRANS","ProQuickTrans Init key[%02X] (connect) Success\n", m_key);
+
             }
 
-            //数据拷贝
-            typeTable->node[index].lenOfData = lenOfData;
-            ::memcpy(typeTable->node[index].block + (xbyte_t *)m_cacheTable, data, lenOfData);
-            //提交状态 开发读
-            typeTable->node[index].st = NODE_ST_RR;
+            return 0;
+        }
+        
+        
+        /**
+         * @brief   反初始化 - 是否资源
+         *
+         * @return  >= 0            成功
+         *          <  0            失败
+         */
+        xint32_t UnInit()
+        {
+            Lock(&m_lock);
+            m_st = 0;
+            if (m_cachePool != NULL)
+            {
+                ::shmdt(m_cachePool);
+                m_cachePool = NULL;
+            }
+            UnLock(&m_lock);
+            return 0;
+        }
 
+        /**
+         * @brief   销毁共享缓存 - 键值
+         *
+         * @param key               共享缓存键值
+         *
+         * @return  >= 0            成功
+         *          <  0            失败
+         */
+        xint32_t Destroy(key_t key)
+        {
+            struct shmid_ds buf;
+            xint32_t shmID = ::shmget(key, 0, IPC_EXCL);
+            if (shmID >= 0)
+            {
+                ::shmctl(shmID, IPC_RMID, &buf);
+            }
             return 0;
         }
 
         
-        xint32_t Read(IndexNode_t * IN, xint32_t ID, xbyte_t * data, xint32_t sizeOfData, xint32_t interval = 10000, xint32_t timeout = 0)
+        /**
+         * @brief 
+         *
+         * @param ID                类型ID
+         * @param data              数据
+         * @param lenOfData         数据长度
+         * @param timeout           超时(ms) < 0: 立即返回 0: 阻塞 >0 : 超时时间
+         * @param spinInterval      自旋间隔(ms) 
+         *
+         * @return  >= 0            成功 
+         *          <  0            失败
+         */
+        xint32_t Write(xint32_t ID, void * data, xint32_t lenOfData, xint32_t timeout = 0, xuint32_t spinInterval = 1)
         {
-            if (NULL == IN || NULL == m_cacheTable || NULL == data)
+            CacheTable_t * pCacheTable = NULL;
+            Node_t * pNode = NULL; 
+
+            Node_t * tmpNode = NULL;
+
+            xint32_t * leftTime = NULL;
+
+            xint32_t needNodeCount = 0;
+
+            xint32_t needLen = 0;
+
+            xint32_t tmpLen = 0;
+
+            xint32_t maxCacheSize = 0;
+
+            xint32_t wIndex = 0;
+
+            if (timeout != 0)
             {
+                leftTime = &timeout;
+            }
+        
+            
+            //合法性检测
+            if (IsInit() < 0)
+            {
+                RM_CBB_LOG_ERROR("PROQUICKTRANS","Wrte Error! Not Init\n");
                 return -1;
             }
-
-            switch (IN->mode)
+            
+            if (ID < 0 || ID >= m_cachePool->cacheTableIndexArraySize)
             {
-                case 0:
-                default:
-                {
-                    return OrderRead(IN, ID, data, sizeOfData, interval, timeout);
-                }
-                case 1:
-                {
-                    return ReadLast(IN, ID, data, sizeOfData, interval, timeout);
-                }
-                case 2:
-                {
-                    return ReadCurrent(IN, ID, data, sizeOfData, interval, timeout);
-                }
+                RM_CBB_LOG_ERROR("PROQUICKTRANS","key[%02X] ID [%d] Error! maxID [%d]\n", m_key, ID, m_cachePool->cacheTableIndexArraySize);
             }
-            //::memcpy(data, typeTable->node[IN->index].block,  typeTable->node[IN->index].lenOfData);
-            //__sync_fetch_and_sub(&(typeTable->node[IN->index].rdRecord), 1);
+
+            pCacheTable = (CacheTable_t *)((xbyte_t *)m_cachePool  + m_cachePool->cacheTableIndex[ID]);
+
+            if (lenOfData > pCacheTable->maxCacheSize)
+            {
+                RM_CBB_LOG_ERROR("PROQUICKTRANS","key[%02X] ID [%d]:: MSG Too long ! MSGLen [%d] maxCacheSize [%d]\n", m_key, ID, lenOfData, pCacheTable->maxCacheSize);
+            }
+
+            needLen = lenOfData + sizeof(Node_t);
+
+            //获取写
+            Lock(&pCacheTable->wLock);
+            while (true)
+            {
+                wIndex = pCacheTable->wIndex;
+                pNode = (Node_t *)(pCacheTable->ptr + wIndex);
+
+                //占有块 
+                tmpNode = pNode;
+                tmpLen = 0;
+
+                while(true)
+                {
+                    if (tmpNode->st == NODE_ST_CHECK)
+                    {
+                        //完成上一次写未完成工作
+                        if (DoNodeCheck(pCacheTable, tmpNode,  spinInterval, leftTime) < 0)
+                        {
+                            RM_CBB_LOG_ERROR("PROQUICKTRANS","key[%02X] ID [%d] Error! Wait Node Check Timeout\n", m_key, ID);
+                            UnLock(&pCacheTable->wLock);
+                            return -2;
+                        }
+                    }
+
+                    if (tmpNode->st == NODE_ST_WW)
+                    {
+                        if (DoSleep(spinInterval, leftTime) < 0)
+                        {
+                            RM_CBB_LOG_ERROR("PROQUICKTRANS","key[%02X] ID [%d]:: Write MSG Timeout[%d]\n", m_key, ID, timeout);
+                            UnLock(&pCacheTable->wLock);
+                            return -1;
+                        }
+                        //NODE_ST_WW 状态可能转为 NODE_ST_CHECK 所以需要再次检测一遍
+                        continue;
+                    }
+
+                    tmpLen += tmpNode->size + sizeof(Node_t);
+                    if (needLen <= tmpLen || tmpNode->nextIndex == 0)
+                    {
+                        //达到拼接条件
+                        
+                        //锁住读写操作 块合并
+                        Lock(&pCacheTable->lock);
+                        pNode->st = NODE_ST_WW; 
+                        pNode->size = tmpLen - sizeof(Node_t);
+                        pNode->len = tmpLen - sizeof(Node_t);
+                        pNode->checkNextIndex = pNode->nextIndex;
+                        if (tmpNode->nextIndex != 0)
+                        {
+                            pNode->nextIndex = wIndex + tmpLen;
+                        }
+                        else
+                        {
+                            pNode->nextIndex = 0;
+                        }
+
+                        tmpNode = (Node_t *)(pCacheTable->ptr + pNode->nextIndex);
+                        tmpNode->preIndex = wIndex;
+                        pCacheTable->wIndex = pNode->nextIndex;
+                        if (0 == pCacheTable->wIndex)
+                        {
+                            pCacheTable->varifyID++;
+                        }
+                        //合并完成 - 放开读 
+                        UnLock(&pCacheTable->lock);
+                        
+                        //放开写
+                        UnLock(&pCacheTable->wLock);
+                        break;
+                    }
+
+                    tmpNode = (Node_t *)(pCacheTable->ptr +  tmpNode->nextIndex);
+                }
+
+                //等待读操作完成 即可写操作
+                while(pNode->rdRecord > 0)
+                {
+                    if ((DoSleep(spinInterval, leftTime)) < 0)
+                    {
+                        RM_CBB_LOG_ERROR("PROQUICKTRANS","key[%02X] ID [%d]:: Write MSG Timeout[%d]\n", m_key, ID, timeout);
+                        //让下次写操作检测即可
+                        pNode->st = NODE_ST_CHECK;
+                        return -1;
+                    }
+                }
+
+                if (pNode->nextIndex != pNode->checkNextIndex)
+                {
+                    tmpNode = (Node_t *)(pCacheTable->ptr + pNode->checkNextIndex);
+                    while(true)
+                    {
+                        while (tmpNode->rdRecord > 0)
+                        {
+                            if ((DoSleep(spinInterval, leftTime)) < 0)
+                            {
+                                RM_CBB_LOG_ERROR("PROQUICKTRANS","key[%02X] ID [%d]:: Write MSG Timeout[%d]\n", m_key, ID, timeout);
+                                //让下次写操作检测即可
+                                pNode->st = NODE_ST_CHECK;
+                                return -1;
+                            }
+                        }
+
+                        if (tmpNode->nextIndex == pNode->nextIndex) 
+                        {
+                            break;
+                        }
+
+                        tmpNode = (Node_t *)(pCacheTable->ptr + tmpNode->nextIndex);
+                    }
+                }
+
+                
+                //检测占有的块是否能够写下数据
+                if (pNode->size < lenOfData)
+                {
+                    //长度不够 继续占有块
+                    pNode->len = pNode->size;
+                    pNode->st = NODE_ST_NONE;
+                    continue;
+                }
+                
+                //写数据
+                pNode->len = lenOfData;
+                ::memcpy(pNode->dataPtr, data, lenOfData);
+
+                //块拆分
+                if (pNode->size - pNode->len > sizeof(Node_t)) 
+                {
+                    Node_t * nextNode = (Node_t *)(pCacheTable->ptr + pNode->nextIndex);
+
+                    tmpNode = (Node_t *)(pCacheTable->ptr + wIndex + sizeof(Node_t) + pNode->len);
+                    tmpNode->preIndex = wIndex;
+                    tmpNode->nextIndex = pNode->nextIndex;
+                    tmpNode->st = NODE_ST_NONE;
+                    tmpNode->size = pNode->size - pNode->len - sizeof(Node_t);
+                    tmpNode->len = tmpNode->size;
+                    tmpNode->checkNextIndex = -1;
+                    tmpNode->rdRecord = 0;
+
+                    Lock(&pCacheTable->lock);
+                    pNode->nextIndex = wIndex + sizeof(Node_t) + pNode->len;
+                    pNode->size = pNode->len;
+
+                    nextNode->preIndex = pNode->nextIndex;
+                    UnLock(&pCacheTable->lock);
+
+                }
+                
+                //设置可读
+                pNode->st = NODE_ST_RR;
+
+                //完成写
+                break;
+            }
+            return 0;
+        }
+
+        /**
+         * @brief                       读取数据
+         *
+         * @param ID                    类型ID
+         * @param readIndex             读索引
+         * @param data                  读数据缓存
+         * @param sizeOfData            读数据缓存大小 
+         * @param outLen                数据长度
+         * @param mode                  读数据模式
+         * @param timeout               超时时间 ms
+         * @param spinInterval          自旋间隔 ms
+         *
+         * @return  >= 0                成功
+         *          <  0                失败 
+         */
+        xint32_t Read(xint32_t ID, ProQuickTransReadIndex_t * readIndex, void * data, xint32_t sizeOfData, xint32_t * outLen, ProQuickTransReadMode_e mode = PRO_TRANS_READ_ORDER, xint32_t timeout = 0, xint32_t spinInterval = 1)
+        {
+            switch(mode)
+            {
+                case PRO_TRANS_READ_ORDER:
+                    return Read_Order(ID, readIndex, data, sizeOfData, outLen, timeout , spinInterval);
+                case PRO_TRANS_READ_OLDEST:
+                    return Read_Order(ID, readIndex, data, sizeOfData, outLen, timeout , spinInterval);
+                    break;
+                case PRO_TRANS_READ_NEWEST:
+                    return Read_Order(ID, readIndex, data, sizeOfData, outLen, timeout , spinInterval);
+                    break;
+                default:
+                    RM_CBB_LOG_ERROR("PROQUICKTRANS","key[%02X] ID [%d] Error! read data Mode Error[%d]\n", m_key, ID, mode);
+                    return -1;
+            }
+            return 0;
         }
     };
 }
