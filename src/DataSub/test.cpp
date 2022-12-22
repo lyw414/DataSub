@@ -1,36 +1,25 @@
-//#include "ProSubTable.hpp"
-#include "DataSub.h"
+#include "DataSub.hpp"
 
-
-class X 
+void HandleFunc(void * msg, int lenOfMsg, void * userParam)
 {
-public:
-    void Do(void * msg, unsigned int len, void * userParam)
-    {
-        printf("param %p len %d subcribe %s\n",userParam, len, (char *)msg);
-    }
-};
+    printf("XXXXXXXXXXXXX %p %d %p\n", msg, lenOfMsg, userParam);
+}
 
 int main()
 {
-    X x;
+    RM_CODE::DataSub dataSub;
+
+    char buf[1024] = {0};
+
+    dataSub.Init("Test", 1024, 1024, 4);
+
+    int msgHandle = dataSub.RegisterMsg(11);
     
-    char buf[128] = {0};
+    dataSub.Subcribe(msgHandle, RM_CODE::Function3<void(void *, int, void *)> (HandleFunc), NULL);
 
-    ::memset(buf, 0x31, 128);
-    LYW_CODE::DataSub dataSub;
-    dataSub.Init("Test");
+    dataSub.Publish(msgHandle, buf, 1024);
 
+    dataSub.UnRegisterMsg(msgHandle);
 
-    LYW_CODE::DataSub dataSub1;
-    dataSub1.Init("Test");
-
-    dataSub.Subcribe(11, LYW_CODE::Function3 <void(void *, unsigned int, void *)> (&X::Do, &x), NULL, 0, 0);
-    while(true)
-    {
-        dataSub.Publish(11, buf, 128);
-        sleep(2);
-    }
     return 0;
 }
-    

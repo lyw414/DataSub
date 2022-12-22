@@ -1,15 +1,12 @@
-SRC_FILE = DataSub.cpp
+SRC_FILE = DataSubAPI.cpp
 
 INC_DIR = -I ./
-INC_DIR += -I DataSubFunc
-INC_DIR += -I SimpleMemoryPool
-INC_DIR += -I RWBlockArray
-INC_DIR += -I Protocol
+INC_DIR += -I ../../include
+INC_DIR += -I DataSub 
 INC_DIR += -I Hash
-INC_DIR += -I ProClientTable
-INC_DIR += -I TaskPool 
-INC_DIR += -I ProSubTable
-INC_DIR += -I RWLock
+INC_DIR += -I SubTable
+INC_DIR += -I ProTrans
+INC_DIR += -I TaskPool
 
 
 FLAGS = -lpthread

@@ -72,7 +72,7 @@ void fork_sd()
             iLoop++;
         }
 
-        //sleep(2);
+        sleep(2);
     }
 
     struct timeval t;
@@ -103,7 +103,7 @@ void fork_do(int id)
         data = (char *)rwBlock.Read(BH, BH,LYW_CODE::Function3<bool(void *, unsigned int, void *) >(&X::IsNeed, &x), &myID);
         if (data != NULL)
         {
-            //printf("id %d :: %s\n", id, (char *)(data + gSub));
+            printf("id %d :: %s\n", id, (char *)(data + gSub));
             ::memset(data + gSub + 1, 0x00, 700);
             data[myID] = 0x00;
             number++;
@@ -133,7 +133,7 @@ int main()
     //BH.index = 0;
     //BH.id = 0;
 
-    gSub = 4;
+    gSub = 1;
     gPub = 1;
     gCount = 10000;
 

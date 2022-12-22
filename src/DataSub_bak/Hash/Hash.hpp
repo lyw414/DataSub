@@ -1,6 +1,6 @@
 #ifndef __LYW_CODE_HASH_HPP__
 #define __LYW_CODE_HASH_HPP__
-namespace RM_CODE
+namespace LYW_CODE
 {
     class Hash
     {

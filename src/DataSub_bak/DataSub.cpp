@@ -201,13 +201,15 @@ namespace LYW_CODE
         {
             //获取进程订阅消息
             data = (char *)m_param->ipc->Read(BH, BH, IsNeed, &m_proID);
-
             taskNode.param = data;
 
             taskNode.lenOfParam = 128;
 
+            //printf("ZZZZZZZZZZZZZZ %d %d\n", BH->id, BH->index);
+
             //添加块处理任务
             m_param->task->AddTask(taskNode);
+            //BlockHandle(taskNode.param, taskNode.lenOfParam);
         }
 
 
@@ -344,7 +346,7 @@ namespace LYW_CODE
     int DataSub::Publish(int msgID, void * msg, int lenOfMsg)
     {
         int msgIndex = m_param->thSub->GetProMsgMap(msgID);
-        
+
         int len = 0;
         
         
@@ -360,15 +362,14 @@ namespace LYW_CODE
         }
 
 
-        int x = m_param->proSub->QuerySubPro(msgIndex, msgID, (unsigned char *)msg + sizeof(int)*2, 32, len);
+        m_param->proSub->QuerySubPro(msgIndex, msgID, (unsigned char *)msg + sizeof(int)*2, 32, len);
 
-        printf("ProSub Info::%02X\n", len);
         
         *((int *)msg) = msgID;
 
         *((int *)((unsigned char *)msg + sizeof(int))) = len;
 
-        m_param->ipc->Write(msg, lenOfMsg, 0);
+        m_param->ipc->Write(msg, lenOfMsg, 100);
 
         return 0;
     }
@@ -376,7 +377,7 @@ namespace LYW_CODE
     int DataSub::Subcribe(int msgID, Function3<void(void *, unsigned int, void *)> handleCB, void * userParam, int mode, int timeout)
     {
         int proMsgIndex = m_param->thSub->GetProMsgMap(msgID);
-
+        
         if (proMsgIndex < 0)
         {
             proMsgIndex = m_param->proSub->MsgRegister(msgID, m_proID, getpid() );
